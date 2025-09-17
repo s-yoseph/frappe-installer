@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 # One-command Frappe v15 + ERPNext + HRMS + custom apps installer (local Ubuntu/WSL/Debian)
-# - No Docker
-# - Handles MariaDB issues on Ubuntu, WSL, and Debian
 set -euo pipefail
 
 ### ===== CONFIG =====

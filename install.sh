@@ -158,11 +158,15 @@ EOF
 # Purpose: Verifies DB is ready before user creation; handles startup delays.
 # Start MariaDB
 echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
-if command -v systemctl >/dev/null 2>&1; then
+if [ "$WSL" = true ]; then
+  # WSL: no systemd, so use service or mysqld_safe
+  sudo service mysql start || sudo service mariadb start || \
+    (echo "Starting MariaDB with mysqld_safe..." && sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql &)
+  sleep 5
+else
+  # Normal Ubuntu with systemd
   sudo systemctl enable mariadb
   sudo systemctl restart mariadb
-else
-  sudo service mysql start || sudo service mariadb start
 fi
 
 # Wait until MariaDB is up

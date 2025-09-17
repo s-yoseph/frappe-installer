@@ -158,8 +158,12 @@ EOF
 # Purpose: Verifies DB is ready before user creation; handles startup delays.
 # Start MariaDB
 echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
-sudo systemctl enable mariadb
-sudo systemctl restart mariadb
+if command -v systemctl >/dev/null 2>&1; then
+  sudo systemctl enable mariadb
+  sudo systemctl restart mariadb
+else
+  sudo service mysql start || sudo service mariadb start
+fi
 
 # Wait until MariaDB is up
 i=0

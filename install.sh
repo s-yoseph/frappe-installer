@@ -108,59 +108,119 @@ yarn -v || true
 # Purpose: Handles WSL/Ubuntu port clashes (e.g., existing MySQL); selects a safe DB_PORT.
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 ### ===== MariaDB Setup =====
-### ===== MariaDB Setup =====
-### ===== MariaDB Setup =====
+# --- MariaDB: check port 3306 and prepare directories ---
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
+sudo mkdir -p /run/mysqld /var/lib/mysql /etc/mysql/conf.d
+sudo chown -R mysql:mysql /run/mysqld /var/lib/mysql
 
-MYSQL_DATA_DIR="/var/lib/mysql"
-MYSQL_PORT=3307
-MYSQL_LOG="/tmp/mariadb.log"
-
-# Kill any stale mysqld processes
-echo -e "${LIGHT_BLUE}Cleaning up stale MariaDB processes and sockets...${NC}"
-sudo pkill -9 mysqld || true
-sudo rm -f "$MYSQL_DATA_DIR"/*.pid "$MYSQL_DATA_DIR"/*.sock
-
-# Ensure ownership and permissions
-sudo mkdir -p "$MYSQL_DATA_DIR"
-sudo chown -R mysql:mysql "$MYSQL_DATA_DIR"
-sudo chmod 755 "$MYSQL_DATA_DIR"
-
-# Initialize only if missing
-if [ ! -d "$MYSQL_DATA_DIR/mysql" ]; then
-    echo -e "${LIGHT_BLUE}Initializing MariaDB system tables...${NC}"
-    sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" > /dev/null
-fi
-
-start_mariadb() {
-    echo -e "${LIGHT_BLUE}Starting MariaDB on port $MYSQL_PORT...${NC}"
-    sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --port="$MYSQL_PORT" > "$MYSQL_LOG" 2>&1 &
-    for i in {1..60}; do
-        if mysqladmin ping -u root --silent >/dev/null 2>&1; then
-            echo -e "${GREEN}MariaDB is up and running on port $MYSQL_PORT!${NC}"
-            return 0
-        fi
+# Find a free port starting from 3306
+DB_PORT=3306
+MAX_PORT=3310
+while [ $DB_PORT -le $MAX_PORT ]; do
+  echo -e "${LIGHT_BLUE}Checking local port $DB_PORT usage...${NC}"
+  PORT_INFO="$(sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\\b" || true)"
+  if [ -n "$PORT_INFO" ]; then
+    echo -e "${YELLOW}Port $DB_PORT is in use. Examining process...${NC}"
+    echo "$PORT_INFO"
+    # Extract pid/program
+    PID="$(echo "$PORT_INFO" | awk '{print $6}' | sed -E 's/.*pid=([0-9]+),.*/\1/' || true)"
+    if [ -n "$PID" ] && ps -p "$PID" -o comm= | grep -qiE "mysql|mariadbd|mysqld"; then
+      echo -e "${YELLOW}Process $PID appears to be MySQL/MariaDB. Attempting to stop it cleanly...${NC}"
+      sudo service mysql stop || true
+      sudo systemctl stop mariadb || true
+      sleep 1
+      if sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\\b" >/dev/null 2>&1; then
+        echo -e "${YELLOW}Killing lingering mysqld process $PID...${NC}"
+        sudo kill "$PID" || sudo kill -9 "$PID" || true
         sleep 1
-    done
-    return 1
-}
-
-# Try starting MariaDB
-if ! start_mariadb; then
-    echo -e "${YELLOW}MariaDB failed to start — reinitializing data dir...${NC}"
-    sudo systemctl stop mariadb || true
-    sudo rm -rf "$MYSQL_DATA_DIR"/*
-    sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" > /dev/null
-    if ! start_mariadb; then
-        echo -e "${RED}MariaDB failed again. Showing last 50 log lines:${NC}"
-        tail -n 50 "$MYSQL_LOG" || true
-        exit 1
+        if sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\\b" >/dev/null 2>&1; then
+          echo -e "${RED}Could not free port $DB_PORT. Trying next port.${NC}"
+          DB_PORT=$((DB_PORT + 1))
+          continue
+        fi
+      fi
+    else
+      echo -e "${RED}Port $DB_PORT is in use by a non-mysqld process; trying next port.${NC}"
+      echo "Output:"
+      echo "$PORT_INFO"
+      DB_PORT=$((DB_PORT + 1))
+      continue
     fi
+  fi
+  # If reached here, port is free
+  break
+done
+
+if [ $DB_PORT -gt $MAX_PORT ]; then
+  echo -e "${RED}Could not find a free port between 3306 and $MAX_PORT.${NC}"
+  exit 1
 fi
 
-# Upgrade if initialized
-echo -e "${LIGHT_BLUE}Running mysql_upgrade...${NC}"
-mysql_upgrade -u root || true
+echo -e "${GREEN}Using MariaDB port $DB_PORT.${NC}"
+
+# Write basic utf8mb4 config with port (idempotent)
+sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
+[mysqld]
+port = $DB_PORT
+character-set-client-handshake = FALSE
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_ci
+
+[mysql]
+default-character-set = utf8mb4
+EOF
+
+# --- Start MariaDB: try normal service, fallback to WSL-safe starts ---
+echo -e "${LIGHT_BLUE}Attempting to start MariaDB...${NC}"
+STARTED=false
+
+if sudo service mysql start 2>/dev/null; then
+  echo -e "${GREEN}Started MariaDB via service.${NC}"
+  STARTED=true
+else
+  echo -e "${YELLOW}service mysql start failed (attempting alternatives)...${NC}"
+  # try init.d
+  if [ -x /etc/init.d/mysql ]; then
+    sudo /etc/init.d/mysql start 2>/dev/null || true
+    sleep 1
+    if sudo mysqladmin -u root --socket=/run/mysqld/mysqld.sock ping --silent 2>/dev/null; then
+      STARTED=true
+    fi
+  fi
+
+  # if not started, initialize datadir if empty
+  if ! $STARTED; then
+    if [ ! -d "/var/lib/mysql/mysql" ] || [ -z "$(ls -A /var/lib/mysql 2>/dev/null)" ]; then
+      echo -e "${YELLOW}Initializing MariaDB data directory (insecure)...${NC}"
+      sudo mysqld --initialize-insecure --user=mysql --datadir=/var/lib/mysql
+    fi
+
+    # start mysqld as mysql user (avoid running as root)
+    if ! sudo mysqladmin -u root --socket=/run/mysqld/mysqld.sock ping --silent 2>/dev/null; then
+      echo -e "${YELLOW}Starting mysqld directly as mysql user and logging to /tmp/mysqld_start.log...${NC}"
+      sudo -u mysql /usr/sbin/mysqld --datadir=/var/lib/mysql --socket=/run/mysqld/mysqld.sock --pid-file=/run/mysqld/mysqld.pid --port=$DB_PORT &>/tmp/mysqld_start.log &
+      sleep 1
+    fi
+  fi
+fi
+
+# Wait until mysql is responsive (timeout increased)
+echo -e "${YELLOW}Waiting for MariaDB to become available (up to 120s)...${NC}"
+MAX_WAIT=120
+i=0
+while ! sudo mysqladmin -u root --socket=/run/mysqld/mysqld.sock ping --silent >/dev/null 2>&1; do
+  sleep 1
+  i=$((i+1))
+  if [ $i -ge $MAX_WAIT ]; then
+    echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s. Show logs and exit.${NC}"
+    echo -e "${LIGHT_BLUE}Tail of /tmp/mysqld_start.log:${NC}"
+    sudo tail -n 200 /tmp/mysqld_start.log || true
+    echo -e "${LIGHT_BLUE}Journal (mariadb.service) last 200 lines:${NC}"
+    sudo journalctl -xeu mariadb.service -n 200 --no-pager || true
+    exit 1
+  fi
+done
+echo -e "${GREEN}MariaDB is up.${NC}"
 
 # MariaDB Bench User Creation
 # - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.

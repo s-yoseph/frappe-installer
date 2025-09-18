@@ -109,12 +109,11 @@ yarn -v || true
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 
-# Ensure data directories exist and proper ownership
+# Ensure directories and ownership
 sudo mkdir -p /run/mysqld /var/lib/mysql /etc/mysql/conf.d
 sudo chown -R mysql:mysql /run/mysqld /var/lib/mysql
 sudo chmod 750 /var/lib/mysql
 
-# Select port
 DB_PORT=3306
 MAX_PORT=3310
 while [ $DB_PORT -le $MAX_PORT ]; do
@@ -147,20 +146,23 @@ default-character-set = utf8mb4
 socket = /run/mysqld/mysqld.sock
 EOF
 
-# Initialize DB if missing
-if [ ! -f "/var/lib/mysql/mysql/user.MYD" ]; then
-  echo -e "${YELLOW}MariaDB system tables not found → initializing...${NC}"
-  sudo rm -f /var/lib/mysql/ib_logfile* /var/lib/mysql/ibdata1 || true
-  if command -v mariadb-install-db >/dev/null 2>&1; then
-    sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql --skip-test-db
-  else
-    sudo mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db
-  fi
+# If system tables exist → wipe everything for clean install
+if [ -d "/var/lib/mysql/mysql" ]; then
+  echo -e "${YELLOW}Existing MariaDB system tables found → wiping datadir for clean install...${NC}"
+  sudo rm -rf /var/lib/mysql/* 
 fi
 
-# Start MariaDB
+# Initialize database
+echo -e "${YELLOW}Initializing MariaDB...${NC}"
+if command -v mariadb-install-db >/dev/null 2>&1; then
+  sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql --skip-test-db
+else
+  sudo mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db
+fi
+
+# Start MariaDB on WSL without systemd
 if [ "$WSL" = true ]; then
-  echo -e "${YELLOW}WSL detected → starting MariaDB without systemd...${NC}"
+  echo -e "${YELLOW}WSL detected → starting MariaDB via mysqld_safe...${NC}"
   sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql --port=$DB_PORT --socket=/run/mysqld/mysqld.sock &
   sleep 5
 else
@@ -181,6 +183,7 @@ until mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1; do
   fi
 done
 echo -e "${GREEN}MariaDB is up.${NC}"
+
 
 # MariaDB Bench User Creation
 # - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.

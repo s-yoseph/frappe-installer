@@ -108,7 +108,7 @@ yarn -v || true
 # Purpose: Handles WSL/Ubuntu port clashes (e.g., existing MySQL); selects a safe DB_PORT.
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 ### ===== MariaDB Setup =====
-# MariaDB Environment Preparation
+
 # MariaDB Environment Preparation
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 sudo mkdir -p /run/mysqld /var/lib/mysql /etc/mysql/conf.d
@@ -158,11 +158,8 @@ if [ ! -f /var/lib/mysql/ibdata1 ] || ! sudo mysql -u root -p"$ROOT_MYSQL_PASS" 
   sudo chown -R mysql:mysql /var/lib/mysql
   sudo mysql_install_db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
   # Start MariaDB daemonize immediately after reset
-  sudo /usr/sbin/mysqld --daemonize --port $DB_PORT --user=mysql --datadir=/var/lib/mysql || {
-    echo -e "${RED}Failed to start MariaDB daemon after reset.${NC}"
-    exit 1
-  }
-  sleep 5
+  sudo mysqld_safe --port $DB_PORT --user=mysql --datadir=/var/lib/mysql &
+  sleep 10  # Longer sleep to allow daemon to initialize
   # Verify daemon is running
   if ! ps aux | grep -q "[m]ysqld.*--port $DB_PORT"; then
     echo -e "${RED}MariaDB daemon not running after reset.${NC}"
@@ -195,7 +192,7 @@ if [ "$WSL" = "true" ] || [ "$DEBIAN" = "true" ]; then
     sudo service mariadb start || sudo service mysql start && break
     echo -e "${YELLOW}MariaDB start attempt $attempt failed, retrying...${NC}"
     sleep 2
-  done || sudo /usr/sbin/mysqld --daemonize --port $DB_PORT || {
+  done || sudo mysqld_safe --port $DB_PORT --user=mysql --datadir=/var/lib/mysql & || {
     echo -e "${RED}Failed to start MariaDB after retries.${NC}"
     sudo journalctl -xeu mariadb.service || sudo journalctl -xeu mysql.service || true
     exit 1

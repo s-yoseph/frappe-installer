@@ -121,8 +121,8 @@ MAX_PORT=3310
 while [ $DB_PORT -le $MAX_PORT ]; do
   PORT_INFO="$(sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\b" || true)"
   if [ -n "$PORT_INFO" ]; then
-    PID="$(echo "$PORT_INFO" | awk '{print $6}' | sed -E 's/.*pid=([0-9]+),.*/\1/' || true)"
-    if [ -n "$PID" ] && ps -p "$PID" -o comm= | grep -qiE "mysql|mariadbd|mysqld"; then
+    PID=$(echo "$PORT_INFO" | awk '{print $6}' | sed -E 's/.*pid=([0-9]+),.*/\1/' || true)
+    if [ -n "$PID" ]; then
       sudo kill -9 "$PID" || true
       sleep 1
     else
@@ -132,6 +132,7 @@ while [ $DB_PORT -le $MAX_PORT ]; do
   fi
   break
 done
+
 echo -e "${GREEN}Using MariaDB port $DB_PORT.${NC}"
 
 # UTF8 config
@@ -147,32 +148,34 @@ default-character-set = utf8mb4
 EOF
 
 MYSQL_SOCKET="/run/mysqld/mysqld.sock"
+sudo rm -f "$MYSQL_SOCKET"
 
-# Detect WSL
-if grep -qi "microsoft\|wsl" /proc/version 2>/dev/null; then
-  echo -e "${YELLOW}Detected WSL: starting MariaDB with skip-grant-tables...${NC}"
-  sudo mariadbd --skip-grant-tables --datadir=/var/lib/mysql --socket="$MYSQL_SOCKET" &
-else
-  echo -e "${LIGHT_BLUE}Starting MariaDB normally...${NC}"
-  sudo systemctl enable mariadb
-  sudo systemctl restart mariadb
+# Initialize DB if empty
+if [ ! -d /var/lib/mysql/mysql ]; then
+    echo -e "${LIGHT_BLUE}Initializing MariaDB system tables...${NC}"
+    sudo mysqld --initialize --user=mysql --datadir=/var/lib/mysql
 fi
+
+# Start MariaDB as mysql user (works in WSL)
+echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
+sudo -u mysql mysqld_safe --datadir=/var/lib/mysql --socket="$MYSQL_SOCKET" --port=$DB_PORT > /tmp/mariadb.log 2>&1 &
+sleep 5
 
 # Wait until MariaDB is ready
 i=0
-MAX_WAIT=150
+MAX_WAIT=120
 until mysql -u root -e "SELECT 1;" >/dev/null 2>&1; do
   sleep 1
   i=$((i+1))
   if [ $i -ge $MAX_WAIT ]; then
     echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s.${NC}"
-    echo "Check /var/lib/mysql/*.err for details."
+    echo "Check /tmp/mariadb.log or /var/lib/mysql/*.err for details."
     exit 1
   fi
 done
 echo -e "${GREEN}MariaDB is up.${NC}"
 
-# Create bench user and DB
+# Create DB user and DB
 echo -e "${LIGHT_BLUE}Creating DB user '${MYSQL_USER}'...${NC}"
 mysql -u root <<SQL
 CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'localhost' IDENTIFIED BY '${MYSQL_PASS}';
@@ -183,15 +186,6 @@ CREATE DATABASE IF NOT EXISTS \`${MYSQL_USER}\`;
 FLUSH PRIVILEGES;
 SQL
 echo -e "${GREEN}DB user '${MYSQL_USER}' ensured.${NC}"
-
-# Kill skip-grant-tables process in WSL
-if grep -qi "microsoft\|wsl" /proc/version 2>/dev/null; then
-  sudo pkill -9 mariadbd || true
-  sleep 2
-  echo -e "${LIGHT_BLUE}Starting MariaDB normally in WSL...${NC}"
-  sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql --port=$DB_PORT --socket="$MYSQL_SOCKET" > /tmp/mariadb.log 2>&1 &
-  sleep 5
-fi
 
 
 # Frappe Bench CLI Installation

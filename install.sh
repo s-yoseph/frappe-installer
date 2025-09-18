@@ -112,6 +112,7 @@ echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 DB_PORT=3307
 MYSQL_DATA_DIR=/var/lib/mysql
 MYSQL_RUN_DIR=/run/mysqld
+MYSQL_SOCKET="$MYSQL_RUN_DIR/mysqld.sock"
 
 # Ensure directories exist
 sudo mkdir -p "$MYSQL_DATA_DIR" "$MYSQL_RUN_DIR"
@@ -122,7 +123,7 @@ sudo chmod 750 "$MYSQL_DATA_DIR" "$MYSQL_RUN_DIR"
 sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
 [mysqld]
 port = $DB_PORT
-socket = $MYSQL_RUN_DIR/mysqld.sock
+socket = $MYSQL_SOCKET
 character-set-client-handshake = FALSE
 character-set-server = utf8mb4
 collation-server = utf8mb4_unicode_ci
@@ -132,10 +133,10 @@ skip-networking
 
 [mysql]
 default-character-set = utf8mb4
-socket = $MYSQL_RUN_DIR/mysqld.sock
+socket = $MYSQL_SOCKET
 EOF
 
-# Initialize MariaDB only if not already initialized
+# Initialize MariaDB only if not initialized
 if [ ! -d "$MYSQL_DATA_DIR/mysql" ]; then
     echo -e "${YELLOW}Initializing MariaDB system tables...${NC}"
     if command -v mariadb-install-db >/dev/null 2>&1; then
@@ -144,43 +145,34 @@ if [ ! -d "$MYSQL_DATA_DIR/mysql" ]; then
         sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" --skip-test-db
     fi
 else
-    echo -e "${YELLOW}MariaDB already initialized → running mysql_upgrade if needed...${NC}"
-    sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --user=mysql --port="$DB_PORT" --socket="$MYSQL_RUN_DIR/mysqld.sock" &
-    sleep 5
-    sudo mysql_upgrade -u root
-    sudo pkill mysqld
+    echo -e "${YELLOW}MariaDB already initialized, skipping installation...${NC}"
 fi
 
-# Start MariaDB manually for WSL
-echo -e "${YELLOW}Starting MariaDB via mysqld_safe...${NC}"
-if pgrep mysqld >/dev/null 2>&1; then
-    echo -e "${GREEN}MariaDB already running.${NC}"
+# Check if MariaDB is already running
+if pgrep -x mysqld >/dev/null 2>&1; then
+    echo -e "${GREEN}MariaDB is already running.${NC}"
 else
-    sudo mysqld_safe \
-        --datadir="$MYSQL_DATA_DIR" \
-        --user=mysql \
-        --port="$DB_PORT" \
-        --socket="$MYSQL_RUN_DIR/mysqld.sock" \
-        > /tmp/mariadb.log 2>&1 &
+    echo -e "${YELLOW}Starting MariaDB via mysqld_safe...${NC}"
+    sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --user=mysql --port="$DB_PORT" --socket="$MYSQL_SOCKET" > /tmp/mariadb.log 2>&1 &
     sleep 5
 fi
 
-# Wait until MariaDB is up
+# Wait until MariaDB is ready
 i=0
 MAX_WAIT=60
-export MYSQL_UNIX_PORT="$MYSQL_RUN_DIR/mysqld.sock"
+export MYSQL_UNIX_PORT="$MYSQL_SOCKET"
 until mysql -u root -S "$MYSQL_UNIX_PORT" -e "SELECT 1;" >/dev/null 2>&1; do
     sleep 1
     i=$((i + 1))
     if [ "$i" -ge "$MAX_WAIT" ]; then
-        echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s.${NC}"
+        echo -e "${RED}MariaDB did not respond within ${MAX_WAIT}s.${NC}"
         echo "==== MariaDB log ===="
         sudo cat /tmp/mariadb.log
         exit 1
     fi
 done
 
-echo -e "${GREEN}MariaDB is up.${NC}"
+echo -e "${GREEN}MariaDB is up and running.${NC}"
 
 # MariaDB Bench User Creation
 # - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.

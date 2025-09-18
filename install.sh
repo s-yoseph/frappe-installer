@@ -107,7 +107,6 @@ yarn -v || true
 #   - Increments port if non-MariaDB process; breaks on free port.
 # Purpose: Handles WSL/Ubuntu port clashes (e.g., existing MySQL); selects a safe DB_PORT.
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
-
 ### ===== MariaDB Setup =====
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 
@@ -153,20 +152,27 @@ start_mariadb() {
         sleep 1
         i=$((i+1))
         if [ $i -ge $MAX_WAIT ]; then
+            echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s. Showing /tmp/mariadb.log:${NC}"
+            tail -n 50 /tmp/mariadb.log
             return 1
         fi
     done
     return 0
 }
 
-# Try to start first
+# If datadir missing, initialize it once
+if [ ! -d "/var/lib/mysql/mysql" ]; then
+    echo -e "${LIGHT_BLUE}Initializing MariaDB system tables...${NC}"
+    sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql
+fi
+
+# Try to start MariaDB
 if ! start_mariadb; then
     echo -e "${YELLOW}MariaDB failed to start. Forcing clean re-init...${NC}"
-    sudo systemctl stop mariadb 2>/dev/null || true
     sudo rm -rf /var/lib/mysql/*
     sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql
     if ! start_mariadb; then
-        echo -e "${RED}MariaDB still did not start. Check /tmp/mariadb.log${NC}"
+        echo -e "${RED}MariaDB still did not start. Please check /tmp/mariadb.log manually.${NC}"
         exit 1
     fi
 fi

@@ -108,8 +108,8 @@ yarn -v || true
 # Purpose: Handles WSL/Ubuntu port clashes (e.g., existing MySQL); selects a safe DB_PORT.
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
-sudo mkdir -p /run/mysqld /var/lib/mysql /etc/mysql/conf.d
-sudo chown -R mysql:mysql /run/mysqld /var/lib/mysql
+sudo mkdir -p /run/mysqld /etc/mysql/conf.d
+sudo chown -R mysql:mysql /run/mysqld
 
 DB_PORT=3306
 MAX_PORT=3310
@@ -118,12 +118,8 @@ while [ $DB_PORT -le $MAX_PORT ]; do
   if [ -n "$PORT_INFO" ]; then
     PID="$(echo "$PORT_INFO" | awk '{print $6}' | sed -E 's/.*pid=([0-9]+),.*/\1/' || true)"
     if [ -n "$PID" ] && ps -p "$PID" -o comm= | grep -qiE "mysql|mariadbd|mysqld"; then
-      sudo systemctl stop mariadb || true
+      sudo kill -9 "$PID" || true
       sleep 1
-      if sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\\b" >/dev/null 2>&1; then
-        sudo kill -9 "$PID" || true
-        sleep 1
-      fi
     else
       DB_PORT=$((DB_PORT + 1))
       continue
@@ -133,12 +129,7 @@ while [ $DB_PORT -le $MAX_PORT ]; do
 done
 echo -e "${GREEN}Using MariaDB port $DB_PORT.${NC}"
 
-# MariaDB UTF-8 Configuration
-# - Writes frappe.cnf to /etc/mysql/conf.d to override defaults.
-# - Sets port to DB_PORT; enables utf8mb4 (full Unicode) for Frappe/ERPNext multilingual support.
-# - Disables client handshake for consistent server charset.
-# Purpose: Ensures database compatibility; applied on restart.
-# Basic UTF8 config
+# Write frappe.cnf for utf8mb4 + port
 sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
 [mysqld]
 port = $DB_PORT
@@ -159,15 +150,11 @@ EOF
 # Start MariaDB
 # Initialize data directory only if mysql.user does NOT exist
 # Ensure MariaDB system tables exist
-echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
-echo "Using MariaDB port $DB_PORT."
-
-# Step 1: Clean + Init if system tables missing
 if [ ! -f "/var/lib/mysql/mysql/user.MYD" ]; then
-  echo -e "${YELLOW}MariaDB system tables not found → cleaning datadir and initializing...${NC}"
-  sudo systemctl stop mariadb 2>/dev/null || true
-  sudo pkill -9 mysqld 2>/dev/null || true
+  echo -e "${YELLOW}MariaDB system tables not found → wiping and initializing...${NC}"
   sudo rm -rf /var/lib/mysql/*
+  sudo mkdir -p /var/lib/mysql
+  sudo chown -R mysql:mysql /var/lib/mysql
 
   if command -v mariadb-install-db >/dev/null 2>&1; then
     sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql --skip-test-db
@@ -176,32 +163,23 @@ if [ ! -f "/var/lib/mysql/mysql/user.MYD" ]; then
   fi
 fi
 
-# Step 2: Fix ownership
-sudo chown -R mysql:mysql /var/lib/mysql
-sudo chmod 750 /var/lib/mysql
+# Try starting MariaDB (non-systemd fallback for WSL)
+echo -e "${YELLOW}Starting MariaDB...${NC}"
+sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql --port=$DB_PORT &
+sleep 10
 
-# Step 3: Start MariaDB
-if [ "$WSL" = true ]; then
-  echo -e "${YELLOW}WSL detected → starting MariaDB without systemd...${NC}"
-  sudo service mysql start || sudo service mariadb start || \
-    (echo "Starting MariaDB with mysqld_safe..." && sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql --port=$DB_PORT &)
-  sleep 5
-else
-  sudo systemctl enable mariadb
-  sudo systemctl restart mariadb
-fi
-
-# Step 4: Health check with retry
+# Health check
 i=0
-MAX_WAIT=60
-until mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1 \
-   || mysql -u root -e "SELECT 1;" >/dev/null 2>&1; do
-  sleep 1
-  i=$((i+1))
+MAX_WAIT=30
+while ! mysqladmin ping >/dev/null 2>&1; do
+  sleep 2
+  i=$((i+2))
   if [ $i -ge $MAX_WAIT ]; then
-    echo -e "${RED}MariaDB failed to start after ${MAX_WAIT}s → wiping datadir and retrying...${NC}"
-    sudo pkill -9 mysqld 2>/dev/null || true
+    echo -e "${RED}MariaDB failed to start → wiping datadir and retrying init...${NC}"
+    sudo pkill -9 mysqld mariadbd 2>/dev/null || true
     sudo rm -rf /var/lib/mysql/*
+    sudo mkdir -p /var/lib/mysql
+    sudo chown -R mysql:mysql /var/lib/mysql
     if command -v mariadb-install-db >/dev/null 2>&1; then
       sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql --skip-test-db
     else

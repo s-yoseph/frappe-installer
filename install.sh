@@ -109,10 +109,22 @@ yarn -v || true
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 
-DB_PORT=3307
 MYSQL_DATA_DIR=/var/lib/mysql
 MYSQL_RUN_DIR=/run/mysqld
 MYSQL_SOCKET="$MYSQL_RUN_DIR/mysqld.sock"
+
+# Function to find a free port (starting from 3306)
+find_free_port() {
+    local port=$1
+    while ss -lnt | awk '{print $4}' | grep -q ":$port$"; do
+        port=$((port + 1))
+    done
+    echo "$port"
+}
+
+# Pick a free port starting from 3307
+DB_PORT=$(find_free_port 3307)
+echo -e "${YELLOW}Using MariaDB port: $DB_PORT${NC}"
 
 # Ensure directories exist
 sudo mkdir -p "$MYSQL_DATA_DIR" "$MYSQL_RUN_DIR"
@@ -148,14 +160,23 @@ else
     echo -e "${YELLOW}MariaDB already initialized, skipping installation...${NC}"
 fi
 
-# Check if MariaDB is already running
+# Kill any stale MariaDB processes
 if pgrep -x mysqld >/dev/null 2>&1; then
-    echo -e "${GREEN}MariaDB is already running.${NC}"
-else
-    echo -e "${YELLOW}Starting MariaDB via mysqld_safe...${NC}"
-    sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --user=mysql --port="$DB_PORT" --socket="$MYSQL_SOCKET" > /tmp/mariadb.log 2>&1 &
-    sleep 5
+    echo -e "${YELLOW}Stopping any existing MariaDB processes...${NC}"
+    sudo pkill -f mysqld || true
+    sleep 3
 fi
+
+# Remove any stale socket file
+if [ -S "$MYSQL_SOCKET" ]; then
+    echo -e "${YELLOW}Removing stale socket file...${NC}"
+    sudo rm -f "$MYSQL_SOCKET"
+fi
+
+# Start MariaDB
+echo -e "${YELLOW}Starting MariaDB via mysqld_safe...${NC}"
+sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --user=mysql --port="$DB_PORT" --socket="$MYSQL_SOCKET" > /tmp/mariadb.log 2>&1 &
+sleep 5
 
 # Wait until MariaDB is ready
 i=0
@@ -172,8 +193,7 @@ until mysql -u root -S "$MYSQL_UNIX_PORT" -e "SELECT 1;" >/dev/null 2>&1; do
     fi
 done
 
-echo -e "${GREEN}MariaDB is up and running.${NC}"
-
+echo -e "${GREEN}MariaDB is up and running on port $DB_PORT.${NC}"
 # MariaDB Bench User Creation
 # - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.
 # - Grants full privileges (ALL ON *.*) with GRANT OPTION for bench ops.

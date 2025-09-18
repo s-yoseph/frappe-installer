@@ -149,10 +149,15 @@ collation-server = utf8mb4_unicode_ci
 default-character-set = utf8mb4
 EOF
 
-# Start MariaDB
 echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
-sudo systemctl enable mariadb
-sudo systemctl restart mariadb
+
+if [ "$WSL" = true ]; then
+  echo -e "${YELLOW}Detected WSL: using mysqld_safe instead of systemctl.${NC}"
+  sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql --port=$DB_PORT > /tmp/mariadb.log 2>&1 &
+else
+  sudo systemctl enable mariadb
+  sudo systemctl restart mariadb
+fi
 
 # Wait until MariaDB is up
 i=0

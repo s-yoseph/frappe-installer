@@ -109,16 +109,19 @@ yarn -v || true
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 
-DB_PORT=3307  # or dynamic port detection if you want
+DB_PORT=3307
 MYSQL_DATA_DIR=/var/lib/mysql
 MYSQL_RUN_DIR=/run/mysqld
 
 # Ensure clean directories
 sudo systemctl stop mariadb 2>/dev/null || true
-sudo rm -rf $MYSQL_DATA_DIR/*
 sudo mkdir -p $MYSQL_DATA_DIR $MYSQL_RUN_DIR
 sudo chown -R mysql:mysql $MYSQL_DATA_DIR $MYSQL_RUN_DIR
 sudo chmod 750 $MYSQL_DATA_DIR
+
+# Remove old data & InnoDB log files
+sudo rm -rf $MYSQL_DATA_DIR/*
+sudo find $MYSQL_DATA_DIR -type f -name "ib*" -exec rm -f {} \; || true
 
 # UTF8 config
 sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
@@ -145,7 +148,7 @@ fi
 # Start MariaDB for WSL without systemd
 echo -e "${YELLOW}WSL detected → starting MariaDB via mysqld_safe...${NC}"
 sudo mysqld_safe --datadir=$MYSQL_DATA_DIR --user=mysql --port=$DB_PORT --socket=$MYSQL_RUN_DIR/mysqld.sock &
-sleep 5  # wait a few seconds before checking
+sleep 5
 
 # Wait until MariaDB is up
 i=0

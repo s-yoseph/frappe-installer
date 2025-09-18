@@ -158,9 +158,10 @@ EOF
 # Purpose: Verifies DB is ready before user creation; handles startup delays.
 # Start MariaDB
 # Initialize data directory only if mysql.user does NOT exist
+# Ensure MariaDB system tables exist
 if [ ! -f "/var/lib/mysql/mysql/user.MYD" ]; then
   echo -e "${YELLOW}MariaDB system tables not found. Initializing...${NC}"
-  sudo rm -f /var/lib/mysql/ib_logfile* /var/lib/mysql/ibdata1 || true
+  sudo rm -rf /var/lib/mysql/*
 
   if command -v mariadb-install-db >/dev/null 2>&1; then
     sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql --skip-test-db
@@ -170,7 +171,6 @@ if [ ! -f "/var/lib/mysql/mysql/user.MYD" ]; then
 else
   echo -e "${GREEN}MariaDB system tables already exist. Skipping initialization.${NC}"
 fi
-
 
 # Fix ownership
 sudo chown -R mysql:mysql /var/lib/mysql

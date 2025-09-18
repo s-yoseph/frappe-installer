@@ -107,93 +107,51 @@ yarn -v || true
 #   - Increments port if non-MariaDB process; breaks on free port.
 # Purpose: Handles WSL/Ubuntu port clashes (e.g., existing MySQL); selects a safe DB_PORT.
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
+### ===== MariaDB Setup =====
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 
-MYSQL_DATA_DIR=/var/lib/mysql
-MYSQL_RUN_DIR=/run/mysqld
-MYSQL_SOCKET="$MYSQL_RUN_DIR/mysqld.sock"
+MYSQL_DATA_DIR="/var/lib/mysql"
+MYSQL_PORT=3307
 
-# Function to find a free port (starting from 3307)
-find_free_port() {
-    local port=$1
-    while ss -lnt | awk '{print $4}' | grep -q ":$port$"; do
-        port=$((port + 1))
-    done
-    echo "$port"
-}
+# Clean up stale processes & sockets
+echo -e "${LIGHT_BLUE}Cleaning up stale MariaDB processes and sockets...${NC}"
+sudo pkill -9 mysqld || true
+sudo rm -f "$MYSQL_DATA_DIR"/*.pid "$MYSQL_DATA_DIR"/*.sock
 
-# Pick a free port starting from 3307
-DB_PORT=$(find_free_port 3307)
-echo -e "${YELLOW}Using MariaDB port: $DB_PORT${NC}"
+# Ensure correct ownership
+sudo chown -R mysql:mysql "$MYSQL_DATA_DIR"
 
-# Ensure directories exist
-sudo mkdir -p "$MYSQL_DATA_DIR" "$MYSQL_RUN_DIR"
-sudo chown -R mysql:mysql "$MYSQL_DATA_DIR" "$MYSQL_RUN_DIR"
-sudo chmod 750 "$MYSQL_DATA_DIR" "$MYSQL_RUN_DIR"
-
-# UTF8 config
-sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
-[mysqld]
-port = $DB_PORT
-socket = $MYSQL_SOCKET
-character-set-client-handshake = FALSE
-character-set-server = utf8mb4
-collation-server = utf8mb4_unicode_ci
-skip-host-cache
-skip-name-resolve
-skip-networking
-
-[mysql]
-default-character-set = utf8mb4
-socket = $MYSQL_SOCKET
-EOF
-
-# Kill any stale MariaDB processes and remove stale files
-echo -e "${YELLOW}Cleaning up stale MariaDB processes and sockets...${NC}"
-sudo pkill -9 mysqld_safe || true
-sudo pkill -9 mariadbd || true
-sleep 2
-sudo rm -f "$MYSQL_SOCKET"
-sudo rm -f "$MYSQL_DATA_DIR"/*.pid
-
-# Initialize MariaDB if not already initialized
+# Initialize or upgrade depending on state
 if [ ! -d "$MYSQL_DATA_DIR/mysql" ]; then
-    echo -e "${YELLOW}Initializing MariaDB system tables...${NC}"
-    if command -v mariadb-install-db >/dev/null 2>&1; then
-        sudo mariadb-install-db --user=mysql --datadir="$MYSQL_DATA_DIR" --skip-test-db
-    else
-        sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" --skip-test-db
-    fi
+    echo -e "${LIGHT_BLUE}Initializing MariaDB system tables...${NC}"
+    sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" > /dev/null
 else
-    echo -e "${YELLOW}MariaDB already initialized. Running mysql_upgrade...${NC}"
-    sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --user=mysql --skip-networking > /tmp/mariadb_upgrade.log 2>&1 &
-    sleep 5
-    sudo mysql_upgrade -u root
-    sudo pkill -9 mysqld_safe
-    sleep 2
+    echo -e "${LIGHT_BLUE}MariaDB already initialized, running mysql_upgrade later...${NC}"
 fi
 
 # Start MariaDB
-echo -e "${YELLOW}Starting MariaDB via mysqld_safe...${NC}"
-sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --user=mysql --port="$DB_PORT" --socket="$MYSQL_SOCKET" > /tmp/mariadb.log 2>&1 &
-sleep 5
+echo -e "${LIGHT_BLUE}Starting MariaDB via mysqld_safe...${NC}"
+sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --port="$MYSQL_PORT" > /tmp/mariadb.log 2>&1 &
 
-# Wait until MariaDB is ready
-i=0
-MAX_WAIT=60
-export MYSQL_UNIX_PORT="$MYSQL_SOCKET"
-until mysql -u root -S "$MYSQL_UNIX_PORT" -e "SELECT 1;" >/dev/null 2>&1; do
-    sleep 1
-    i=$((i + 1))
-    if [ "$i" -ge "$MAX_WAIT" ]; then
-        echo -e "${RED}MariaDB did not respond within ${MAX_WAIT}s.${NC}"
-        echo "==== MariaDB log ===="
-        sudo cat /tmp/mariadb.log
-        exit 1
+# Wait for MariaDB to respond
+for i in {1..60}; do
+    if mysqladmin ping -u root --silent >/dev/null 2>&1; then
+        echo -e "${GREEN}MariaDB is up and running on port $MYSQL_PORT!${NC}"
+        break
     fi
+    sleep 1
 done
 
-echo -e "${GREEN}MariaDB is up and running on port $DB_PORT.${NC}"
+if ! mysqladmin ping -u root --silent >/dev/null 2>&1; then
+    echo -e "${RED}MariaDB did not respond within 60s. Check /tmp/mariadb.log${NC}"
+    exit 1
+fi
+
+# Run upgrade if already initialized
+if [ -d "$MYSQL_DATA_DIR/mysql" ]; then
+    echo -e "${LIGHT_BLUE}Running mysql_upgrade to ensure system tables are up-to-date...${NC}"
+    mysql_upgrade -u root || true
+fi
 
 # MariaDB Bench User Creation
 # - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.

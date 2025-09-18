@@ -107,9 +107,6 @@ yarn -v || true
 #   - Increments port if non-MariaDB process; breaks on free port.
 # Purpose: Handles WSL/Ubuntu port clashes (e.g., existing MySQL); selects a safe DB_PORT.
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
-#!/usr/bin/env bash
-set -euo pipefail
-
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 
 MYSQL_DATA_DIR=/var/lib/mysql
@@ -151,18 +148,13 @@ default-character-set = utf8mb4
 socket = $MYSQL_SOCKET
 EOF
 
-# Kill any stale MariaDB processes and remove socket
-if pgrep -x mysqld >/dev/null 2>&1; then
-    echo -e "${YELLOW}Stopping any existing MariaDB processes...${NC}"
-    sudo pkill -9 mysqld_safe || true
-    sudo pkill -9 mariadbd || true
-    sleep 3
-fi
-
-if [ -S "$MYSQL_SOCKET" ]; then
-    echo -e "${YELLOW}Removing stale socket file...${NC}"
-    sudo rm -f "$MYSQL_SOCKET"
-fi
+# Kill any stale MariaDB processes and remove stale files
+echo -e "${YELLOW}Cleaning up stale MariaDB processes and sockets...${NC}"
+sudo pkill -9 mysqld_safe || true
+sudo pkill -9 mariadbd || true
+sleep 2
+sudo rm -f "$MYSQL_SOCKET"
+sudo rm -f "$MYSQL_DATA_DIR"/*.pid
 
 # Initialize MariaDB if not already initialized
 if [ ! -d "$MYSQL_DATA_DIR/mysql" ]; then
@@ -178,6 +170,7 @@ else
     sleep 5
     sudo mysql_upgrade -u root
     sudo pkill -9 mysqld_safe
+    sleep 2
 fi
 
 # Start MariaDB
@@ -201,6 +194,7 @@ until mysql -u root -S "$MYSQL_UNIX_PORT" -e "SELECT 1;" >/dev/null 2>&1; do
 done
 
 echo -e "${GREEN}MariaDB is up and running on port $DB_PORT.${NC}"
+
 # MariaDB Bench User Creation
 # - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.
 # - Grants full privileges (ALL ON *.*) with GRANT OPTION for bench ops.

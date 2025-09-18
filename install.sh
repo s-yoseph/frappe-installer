@@ -107,13 +107,16 @@ yarn -v || true
 #   - Increments port if non-MariaDB process; breaks on free port.
 # Purpose: Handles WSL/Ubuntu port clashes (e.g., existing MySQL); selects a safe DB_PORT.
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
+#!/usr/bin/env bash
+set -euo pipefail
+
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 
 MYSQL_DATA_DIR=/var/lib/mysql
 MYSQL_RUN_DIR=/run/mysqld
 MYSQL_SOCKET="$MYSQL_RUN_DIR/mysqld.sock"
 
-# Function to find a free port (starting from 3306)
+# Function to find a free port (starting from 3307)
 find_free_port() {
     local port=$1
     while ss -lnt | awk '{print $4}' | grep -q ":$port$"; do
@@ -148,7 +151,20 @@ default-character-set = utf8mb4
 socket = $MYSQL_SOCKET
 EOF
 
-# Initialize MariaDB only if not initialized
+# Kill any stale MariaDB processes and remove socket
+if pgrep -x mysqld >/dev/null 2>&1; then
+    echo -e "${YELLOW}Stopping any existing MariaDB processes...${NC}"
+    sudo pkill -9 mysqld_safe || true
+    sudo pkill -9 mariadbd || true
+    sleep 3
+fi
+
+if [ -S "$MYSQL_SOCKET" ]; then
+    echo -e "${YELLOW}Removing stale socket file...${NC}"
+    sudo rm -f "$MYSQL_SOCKET"
+fi
+
+# Initialize MariaDB if not already initialized
 if [ ! -d "$MYSQL_DATA_DIR/mysql" ]; then
     echo -e "${YELLOW}Initializing MariaDB system tables...${NC}"
     if command -v mariadb-install-db >/dev/null 2>&1; then
@@ -157,20 +173,11 @@ if [ ! -d "$MYSQL_DATA_DIR/mysql" ]; then
         sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" --skip-test-db
     fi
 else
-    echo -e "${YELLOW}MariaDB already initialized, skipping installation...${NC}"
-fi
-
-# Kill any stale MariaDB processes
-if pgrep -x mysqld >/dev/null 2>&1; then
-    echo -e "${YELLOW}Stopping any existing MariaDB processes...${NC}"
-    sudo pkill -f mysqld || true
-    sleep 3
-fi
-
-# Remove any stale socket file
-if [ -S "$MYSQL_SOCKET" ]; then
-    echo -e "${YELLOW}Removing stale socket file...${NC}"
-    sudo rm -f "$MYSQL_SOCKET"
+    echo -e "${YELLOW}MariaDB already initialized. Running mysql_upgrade...${NC}"
+    sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --user=mysql --skip-networking > /tmp/mariadb_upgrade.log 2>&1 &
+    sleep 5
+    sudo mysql_upgrade -u root
+    sudo pkill -9 mysqld_safe
 fi
 
 # Start MariaDB

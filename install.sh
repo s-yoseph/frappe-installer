@@ -108,7 +108,6 @@ yarn -v || true
 # Purpose: Handles WSL/Ubuntu port clashes (e.g., existing MySQL); selects a safe DB_PORT.
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 
-### ===== MariaDB Setup =====
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 sudo mkdir -p /run/mysqld /var/lib/mysql /etc/mysql/conf.d
 sudo chown -R mysql:mysql /run/mysqld /var/lib/mysql
@@ -117,22 +116,22 @@ sudo chmod 750 /run/mysqld /var/lib/mysql
 DB_PORT=3306
 MAX_PORT=3310
 
+# Kill any lingering MariaDB processes
+sudo pkill -9 mariadbd mysqld mysqld_safe || true
+sleep 2
+
+# Remove stale socket and lock files
+sudo rm -f /run/mysqld/mysqld.sock
+sudo rm -f /var/lib/mysql/aria_log_control
+sudo rm -f /var/lib/mysql/ibdata1.lock 2>/dev/null || true
+
 # Find free port
 while [ $DB_PORT -le $MAX_PORT ]; do
-  PORT_INFO="$(sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\b" || true)"
-  if [ -n "$PORT_INFO" ]; then
-    PID=$(echo "$PORT_INFO" | awk '{print $6}' | sed -E 's/.*pid=([0-9]+),.*/\1/' || true)
-    if [ -n "$PID" ]; then
-      sudo kill -9 "$PID" || true
-      sleep 1
-    else
-      DB_PORT=$((DB_PORT + 1))
-      continue
-    fi
+  if ! sudo ss -ltnp 2>/dev/null | grep -q ":$DB_PORT\b"; then
+    break
   fi
-  break
+  DB_PORT=$((DB_PORT + 1))
 done
-
 echo -e "${GREEN}Using MariaDB port $DB_PORT.${NC}"
 
 # UTF8 config
@@ -148,7 +147,6 @@ default-character-set = utf8mb4
 EOF
 
 MYSQL_SOCKET="/run/mysqld/mysqld.sock"
-sudo rm -f "$MYSQL_SOCKET"
 
 # Initialize DB if empty
 if [ ! -d /var/lib/mysql/mysql ]; then
@@ -156,10 +154,9 @@ if [ ! -d /var/lib/mysql/mysql ]; then
     sudo mysqld --initialize --user=mysql --datadir=/var/lib/mysql
 fi
 
-# Start MariaDB as mysql user (works in WSL)
+# Start MariaDB as mysql user
 echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
 sudo -u mysql mysqld_safe --datadir=/var/lib/mysql --socket="$MYSQL_SOCKET" --port=$DB_PORT > /tmp/mariadb.log 2>&1 &
-sleep 5
 
 # Wait until MariaDB is ready
 i=0
@@ -175,7 +172,7 @@ until mysql -u root -e "SELECT 1;" >/dev/null 2>&1; do
 done
 echo -e "${GREEN}MariaDB is up.${NC}"
 
-# Create DB user and DB
+# Create DB user
 echo -e "${LIGHT_BLUE}Creating DB user '${MYSQL_USER}'...${NC}"
 mysql -u root <<SQL
 CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'localhost' IDENTIFIED BY '${MYSQL_PASS}';

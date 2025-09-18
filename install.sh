@@ -157,19 +157,18 @@ EOF
 # - Exits on timeout (common in WSL if ports linger).
 # Purpose: Verifies DB is ready before user creation; handles startup delays.
 # Start MariaDB
-echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
-# Ensure data directory initialized
-if [ ! -d "/var/lib/mysql/mysql" ]; then
-  echo -e "${YELLOW}MariaDB data directory is empty. Initializing...${NC}"
-  # Clean up old redo logs if any
+# Initialize data directory only if mysql.user does NOT exist
+if [ ! -f "/var/lib/mysql/mysql/user.MYD" ]; then
+  echo -e "${YELLOW}MariaDB system tables not found. Initializing...${NC}"
   sudo rm -f /var/lib/mysql/ib_logfile* /var/lib/mysql/ibdata1 || true
 
-  # MariaDB-specific initialization
   if command -v mariadb-install-db >/dev/null 2>&1; then
     sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql --skip-test-db
   else
     sudo mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db
   fi
+else
+  echo -e "${GREEN}MariaDB system tables already exist. Skipping initialization.${NC}"
 fi
 
 

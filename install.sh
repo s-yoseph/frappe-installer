@@ -157,18 +157,29 @@ EOF
 # - Exits on timeout (common in WSL if ports linger).
 # Purpose: Verifies DB is ready before user creation; handles startup delays.
 # Start MariaDB
-echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
+echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 # Ensure data directory initialized
 if [ ! -d "/var/lib/mysql/mysql" ]; then
   echo -e "${YELLOW}MariaDB data directory is empty. Initializing...${NC}"
-  sudo mysqld --initialize-insecure --user=mysql --datadir=/var/lib/mysql
+  # Clean up old redo logs if any
+  sudo rm -f /var/lib/mysql/ib_logfile* /var/lib/mysql/ibdata1 || true
+
+  # MariaDB-specific initialization
+  if command -v mariadb-install-db >/dev/null 2>&1; then
+    sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql --skip-test-db
+  else
+    sudo mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db
+  fi
 fi
+
 
 # Fix ownership
 sudo chown -R mysql:mysql /var/lib/mysql
 sudo chmod 750 /var/lib/mysql
 
+
 # Start MariaDB differently depending on environment
+echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
 if [ "$WSL" = true ]; then
   echo -e "${YELLOW}WSL detected → starting MariaDB without systemd...${NC}"
   sudo service mysql start || sudo service mariadb start || \
@@ -179,10 +190,11 @@ else
   sudo systemctl restart mariadb
 fi
 
-# Wait until MariaDB is up
+# Wait until MariaDB is up (with or without root password)
 i=0
 MAX_WAIT=60
-until mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1; do
+until mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1 \
+   || mysql -u root -e "SELECT 1;" >/dev/null 2>&1; do
   sleep 1
   i=$((i+1))
   if [ $i -ge $MAX_WAIT ]; then

@@ -116,8 +116,10 @@ sudo chmod 750 /run/mysqld /var/lib/mysql
 DB_PORT=3306
 MAX_PORT=3310
 
-# Kill any lingering MariaDB processes
-sudo pkill -9 mariadbd mysqld mysqld_safe || true
+# Kill any lingering MariaDB processes separately
+sudo pkill -9 mariadbd || true
+sudo pkill -9 mysqld || true
+sudo pkill -9 mysqld_safe || true
 sleep 2
 
 # Remove stale socket and lock files
@@ -148,10 +150,10 @@ EOF
 
 MYSQL_SOCKET="/run/mysqld/mysqld.sock"
 
-# Initialize DB if empty
+# Initialize DB only if empty
 if [ ! -d /var/lib/mysql/mysql ]; then
     echo -e "${LIGHT_BLUE}Initializing MariaDB system tables...${NC}"
-    sudo mysqld --initialize --user=mysql --datadir=/var/lib/mysql
+    sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql
 fi
 
 # Start MariaDB as mysql user
@@ -183,6 +185,7 @@ CREATE DATABASE IF NOT EXISTS \`${MYSQL_USER}\`;
 FLUSH PRIVILEGES;
 SQL
 echo -e "${GREEN}DB user '${MYSQL_USER}' ensured.${NC}"
+
 
 
 # Frappe Bench CLI Installation

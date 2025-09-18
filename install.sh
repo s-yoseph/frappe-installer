@@ -109,6 +109,7 @@ yarn -v || true
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 ### ===== MariaDB Setup =====
 # --- MariaDB: check port 3306 and prepare directories ---
+# --- MariaDB: check port 3306 and prepare directories ---
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 sudo mkdir -p /run/mysqld /var/lib/mysql /etc/mysql/conf.d
 sudo chown -R mysql:mysql /run/mysqld /var/lib/mysql
@@ -123,7 +124,7 @@ while [ $DB_PORT -le $MAX_PORT ]; do
     echo -e "${YELLOW}Port $DB_PORT is in use. Examining process...${NC}"
     echo "$PORT_INFO"
     # Extract pid/program
-    PID="$(echo "$PORT_INFO" | awk '{print $6}' | sed -E 's/.*pid=([0-9]+),.*/\1/' || true)"
+    PID="$(echo "$PORT_INFO" | grep -oP 'pid=\K[0-9]+' || true)"
     if [ -n "$PID" ] && ps -p "$PID" -o comm= | grep -qiE "mysql|mariadbd|mysqld"; then
       echo -e "${YELLOW}Process $PID appears to be MySQL/MariaDB. Attempting to stop it cleanly...${NC}"
       sudo service mysql stop || true
@@ -179,7 +180,7 @@ if sudo service mysql start 2>/dev/null; then
   STARTED=true
 else
   echo -e "${YELLOW}service mysql start failed (attempting alternatives)...${NC}"
-  # try init.d
+  # Try init.d
   if [ -x /etc/init.d/mysql ]; then
     sudo /etc/init.d/mysql start 2>/dev/null || true
     sleep 1
@@ -188,14 +189,14 @@ else
     fi
   fi
 
-  # if not started, initialize datadir if empty
+  # If not started, initialize datadir if empty
   if ! $STARTED; then
     if [ ! -d "/var/lib/mysql/mysql" ] || [ -z "$(ls -A /var/lib/mysql 2>/dev/null)" ]; then
       echo -e "${YELLOW}Initializing MariaDB data directory (insecure)...${NC}"
       sudo mysqld --initialize-insecure --user=mysql --datadir=/var/lib/mysql
     fi
 
-    # start mysqld as mysql user (avoid running as root)
+    # Start mysqld as mysql user (avoid running as root)
     if ! sudo mysqladmin -u root --socket=/run/mysqld/mysqld.sock ping --silent 2>/dev/null; then
       echo -e "${YELLOW}Starting mysqld directly as mysql user and logging to /tmp/mysqld_start.log...${NC}"
       sudo -u mysql /usr/sbin/mysqld --datadir=/var/lib/mysql --socket=/run/mysqld/mysqld.sock --pid-file=/run/mysqld/mysqld.pid --port=$DB_PORT &>/tmp/mysqld_start.log &
@@ -221,6 +222,28 @@ while ! sudo mysqladmin -u root --socket=/run/mysqld/mysqld.sock ping --silent >
   fi
 done
 echo -e "${GREEN}MariaDB is up.${NC}"
+
+# --- Check and fix MariaDB root access ---
+echo -e "${LIGHT_BLUE}Checking MariaDB root access...${NC}"
+if ! sudo mysqladmin -u root --socket=/run/mysqld/mysqld.sock ping --silent 2>/dev/null; then
+  echo -e "${YELLOW}Root access failed, attempting to reset root password...${NC}"
+  sudo systemctl stop mariadb || true
+  sudo mysqld_safe --skip-grant-tables --user=mysql --port=$DB_PORT &>/tmp/mysqld_safe.log &
+  sleep 5
+  sudo mysql --socket=/run/mysqld/mysqld.sock <<SQL
+FLUSH PRIVILEGES;
+ALTER USER 'root'@'localhost' IDENTIFIED BY '';
+FLUSH PRIVILEGES;
+SQL
+  sudo killall mysqld_safe || true
+  sudo service mysql start || sudo /usr/sbin/mysqld --user=mysql --port=$DB_PORT &>/tmp/mysqld_start.log &
+  sleep 5
+  if ! sudo mysqladmin -u root --socket=/run/mysqld/mysqld.sock ping --silent 2>/dev/null; then
+    echo -e "${RED}Failed to reset root access. Check logs at /tmp/mysqld_safe.log or /var/log/mysql/error.log.${NC}"
+    exit 1
+  fi
+  echo -e "${GREEN}Root access reset (no password).${NC}"
+fi
 
 # MariaDB Bench User Creation
 # - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.

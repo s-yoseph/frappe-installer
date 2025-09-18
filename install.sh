@@ -113,31 +113,29 @@ echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 sudo mkdir -p /run/mysqld /var/lib/mysql /etc/mysql/conf.d
 sudo chown -R mysql:mysql /run/mysqld /var/lib/mysql
 
-
-
 DB_PORT=3306
 MAX_PORT=3310
+
 while [ $DB_PORT -le $MAX_PORT ]; do
-  PORT_INFO="$(sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\\b" || true)"
+  PORT_INFO="$(sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\b" || true)"
   if [ -n "$PORT_INFO" ]; then
-    PID="$(echo "$PORT_INFO" | awk '{print $6}' | sed -E 's/.*pid=([0-9]+),.*/\1/' || true)"
-    if [ -n "$PID" ] && ps -p "$PID" -o comm= | grep -qiE "mysql|mariadbd|mysqld"; then
-      sudo systemctl stop mariadb || true
-      sleep 1
-      if sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\\b" >/dev/null 2>&1; then
-        sudo kill -9 "$PID" || true
-        sleep 1
-      fi
-    else
-      DB_PORT=$((DB_PORT + 1))
-      continue
-    fi
+    PID="$(echo "$PORT_INFO" | awk '{print $6}' | sed -E 's/.*pid=([0-9]+),.*/\1/' || true)"
+    if [ -n "$PID" ] && ps -p "$PID" -o comm= | grep -qiE "mysql|mariadbd|mysqld"; then
+      sudo systemctl stop mariadb || true
+      sleep 1
+      if sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\b" >/dev/null 2>&1; then
+        sudo kill -9 "$PID" || true
+        sleep 1
+      fi
+    else
+      DB_PORT=$((DB_PORT + 1))
+      continue
+    fi
   fi
   break
 done
+
 echo -e "${GREEN}Using MariaDB port $DB_PORT.${NC}"
-
-
 
 # Basic UTF8 config
 sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
@@ -145,24 +143,16 @@ sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
 port = $DB_PORT
 character-set-client-handshake = FALSE
 character-set-server = utf8mb4
-
-character-set-server = utf8mb4
 collation-server = utf8mb4_unicode_ci
-
-
 
 [mysql]
 default-character-set = utf8mb4
 EOF
 
-
-
 # Start MariaDB
 echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
 sudo systemctl enable mariadb
 sudo systemctl restart mariadb
-
-
 
 # Wait until MariaDB is up
 i=0
@@ -171,21 +161,14 @@ until mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1; do
   sleep 1
   i=$((i+1))
   if [ $i -ge $MAX_WAIT ]; then
-    echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s.${NC}"
-    exit 1
+    echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s.${NC}"
+    exit 1
   fi
 done
+
 echo -e "${GREEN}MariaDB is up.${NC}"
 
 # MariaDB Bench User Creation
-# - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.
-# - Grants full privileges (ALL ON *.*) with GRANT OPTION for bench ops.
-# - Creates 'frappe' database.
-# - Flushes privileges to apply immediately.
-# Purpose: Dedicated user for bench/site creation; avoids root overuse.
-# Gotcha: Assumes ROOT_MYSQL_PASS is set (run sudo mysql_secure_installation first if fresh).
-# Create bench DB user
-# Create bench DB user
 echo -e "${LIGHT_BLUE}Creating DB user '${MYSQL_USER}'...${NC}"
 mysql -u root -p"$ROOT_MYSQL_PASS" <<SQL
 CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'localhost' IDENTIFIED BY '${MYSQL_PASS}';
@@ -195,6 +178,7 @@ GRANT ALL PRIVILEGES ON *.* TO '${MYSQL_USER}'@'127.0.0.1' WITH GRANT OPTION;
 CREATE DATABASE IF NOT EXISTS \`${MYSQL_USER}\`;
 FLUSH PRIVILEGES;
 SQL
+
 echo -e "${GREEN}DB user '${MYSQL_USER}' ensured.${NC}"
 
 # Frappe Bench CLI Installation

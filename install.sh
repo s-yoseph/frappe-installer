@@ -148,10 +148,12 @@ collation-server = utf8mb4_unicode_ci
 default-character-set = utf8mb4
 EOF
 
-# Initialize MariaDB only if not already initialized
+# Only initialize if the mysql system database is missing
 if [ ! -d "/var/lib/mysql/mysql" ]; then
-    echo -e "${LIGHT_BLUE}Initializing MariaDB system tables...${NC}"
+    echo -e "${LIGHT_BLUE}Initializing MariaDB system tables (first time only)...${NC}"
     sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql
+else
+    echo -e "${YELLOW}MariaDB already initialized, skipping install-db.${NC}"
 fi
 
 # Start MariaDB safely

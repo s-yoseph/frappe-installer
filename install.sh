@@ -159,8 +159,14 @@ EOF
 # Start MariaDB
 # Initialize data directory only if mysql.user does NOT exist
 # Ensure MariaDB system tables exist
+echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
+echo "Using MariaDB port $DB_PORT."
+
+# Step 1: Clean + Init if system tables missing
 if [ ! -f "/var/lib/mysql/mysql/user.MYD" ]; then
-  echo -e "${YELLOW}MariaDB system tables not found. Initializing...${NC}"
+  echo -e "${YELLOW}MariaDB system tables not found → cleaning datadir and initializing...${NC}"
+  sudo systemctl stop mariadb 2>/dev/null || true
+  sudo pkill -9 mysqld 2>/dev/null || true
   sudo rm -rf /var/lib/mysql/*
 
   if command -v mariadb-install-db >/dev/null 2>&1; then
@@ -168,17 +174,13 @@ if [ ! -f "/var/lib/mysql/mysql/user.MYD" ]; then
   else
     sudo mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db
   fi
-else
-  echo -e "${GREEN}MariaDB system tables already exist. Skipping initialization.${NC}"
 fi
 
-# Fix ownership
+# Step 2: Fix ownership
 sudo chown -R mysql:mysql /var/lib/mysql
 sudo chmod 750 /var/lib/mysql
 
-
-# Start MariaDB differently depending on environment
-echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
+# Step 3: Start MariaDB
 if [ "$WSL" = true ]; then
   echo -e "${YELLOW}WSL detected → starting MariaDB without systemd...${NC}"
   sudo service mysql start || sudo service mariadb start || \
@@ -189,7 +191,7 @@ else
   sudo systemctl restart mariadb
 fi
 
-# Wait until MariaDB is up (with or without root password)
+# Step 4: Health check with retry
 i=0
 MAX_WAIT=60
 until mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1 \
@@ -197,8 +199,17 @@ until mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1 \
   sleep 1
   i=$((i+1))
   if [ $i -ge $MAX_WAIT ]; then
-    echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s.${NC}"
-    exit 1
+    echo -e "${RED}MariaDB failed to start after ${MAX_WAIT}s → wiping datadir and retrying...${NC}"
+    sudo pkill -9 mysqld 2>/dev/null || true
+    sudo rm -rf /var/lib/mysql/*
+    if command -v mariadb-install-db >/dev/null 2>&1; then
+      sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql --skip-test-db
+    else
+      sudo mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db
+    fi
+    sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql --port=$DB_PORT &
+    sleep 10
+    break
   fi
 done
 echo -e "${GREEN}MariaDB is up.${NC}"

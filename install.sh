@@ -133,6 +133,7 @@ character-set-server = utf8mb4
 collation-server = utf8mb4_unicode_ci
 skip-host-cache
 skip-name-resolve
+skip-networking
 
 [mysql]
 default-character-set = utf8mb4
@@ -147,27 +148,32 @@ else
   sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" --skip-test-db
 fi
 
-# Start MariaDB for WSL without systemd
+# Start MariaDB manually for WSL
 echo -e "${YELLOW}WSL detected → starting MariaDB via mysqld_safe...${NC}"
-sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --user=mysql --port="$DB_PORT" --socket="$MYSQL_RUN_DIR/mysqld.sock" &
+sudo mysqld_safe \
+  --datadir="$MYSQL_DATA_DIR" \
+  --user=mysql \
+  --port="$DB_PORT" \
+  --socket="$MYSQL_RUN_DIR/mysqld.sock" \
+  > /tmp/mariadb.log 2>&1 &
 sleep 5
 
 # Wait until MariaDB is up
 i=0
 MAX_WAIT=60
 export MYSQL_UNIX_PORT="$MYSQL_RUN_DIR/mysqld.sock"
-until mysql -u root -e "SELECT 1;" >/dev/null 2>&1; do
+until mysql -u root -S "$MYSQL_UNIX_PORT" -e "SELECT 1;" >/dev/null 2>&1; do
   sleep 1
   i=$((i + 1))
   if [ "$i" -ge "$MAX_WAIT" ]; then
     echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s.${NC}"
-    sudo find "$MYSQL_DATA_DIR" -name "*.err" -exec cat {} \;
+    echo "==== MariaDB log ===="
+    sudo cat /tmp/mariadb.log
     exit 1
   fi
 done
 
 echo -e "${GREEN}MariaDB is up.${NC}"
-
 # MariaDB Bench User Creation
 # - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.
 # - Grants full privileges (ALL ON *.*) with GRANT OPTION for bench ops.

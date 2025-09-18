@@ -109,6 +109,7 @@ yarn -v || true
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 ### ===== MariaDB Setup =====
 # MariaDB Environment Preparation
+# MariaDB Environment Preparation
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 sudo mkdir -p /run/mysqld /var/lib/mysql /etc/mysql/conf.d
 sudo chown -R mysql:mysql /run/mysqld /var/lib/mysql
@@ -141,6 +142,12 @@ while [ $DB_PORT -le $MAX_PORT ]; do
 done
 echo -e "${GREEN}Using MariaDB port $DB_PORT.${NC}"
 
+# Clean Up Corrupted Log Files
+echo -e "${LIGHT_BLUE}Cleaning up corrupted MariaDB log files...${NC}"
+sudo mv /var/lib/mysql/ib_logfile0 /var/lib/mysql/ib_logfile0.backup || true
+sudo mv /var/lib/mysql/ib_logfile1 /var/lib/mysql/ib_logfile1.backup || true
+sudo rm /var/lib/mysql/tc.log || true
+
 # MariaDB UTF-8 Configuration
 sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
 [mysqld]
@@ -154,13 +161,10 @@ collation-server = utf8mb4_unicode_ci
 default-character-set = utf8mb4
 EOF
 
-# MariaDB Root Password Setup
+# MariaDB Root Password Setup (Non-Interactive)
 echo -e "${LIGHT_BLUE}Setting up MariaDB root password...${NC}"
 sudo mysqladmin -u root password "$ROOT_MYSQL_PASS" 2>/dev/null || true
-sudo mysql -u root -p"$ROOT_MYSQL_PASS" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$ROOT_MYSQL_PASS';" 2>/dev/null || true
-if [ "$WSL" = "true" ] || [ "$DEBIAN" = "true" ]; then
-  echo "Y" | sudo mysql_secure_installation || true
-fi
+sudo mysql -u root -p"$ROOT_MYSQL_PASS" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$ROOT_MYSQL_PASS'; FLUSH PRIVILEGES;" 2>/dev/null || true
 
 # MariaDB Startup and Health Check
 echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
@@ -205,7 +209,6 @@ CREATE USER IF NOT EXISTS '$MYSQL_USER'@'localhost' IDENTIFIED BY '$MYSQL_PASS';
 GRANT ALL PRIVILEGES ON *.* TO '$MYSQL_USER'@'localhost' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 EOF
-
 # MariaDB Bench User Creation
 # - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.
 # - Grants full privileges (ALL ON *.*) with GRANT OPTION for bench ops.

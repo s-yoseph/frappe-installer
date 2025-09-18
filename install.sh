@@ -108,9 +108,13 @@ yarn -v || true
 # Purpose: Handles WSL/Ubuntu port clashes (e.g., existing MySQL); selects a safe DB_PORT.
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
-sudo mkdir -p /run/mysqld /etc/mysql/conf.d
-sudo chown -R mysql:mysql /run/mysqld
 
+# Ensure data directories exist and proper ownership
+sudo mkdir -p /run/mysqld /var/lib/mysql /etc/mysql/conf.d
+sudo chown -R mysql:mysql /run/mysqld /var/lib/mysql
+sudo chmod 750 /var/lib/mysql
+
+# Select port
 DB_PORT=3306
 MAX_PORT=3310
 while [ $DB_PORT -le $MAX_PORT ]; do
@@ -129,33 +133,24 @@ while [ $DB_PORT -le $MAX_PORT ]; do
 done
 echo -e "${GREEN}Using MariaDB port $DB_PORT.${NC}"
 
-# Write frappe.cnf for utf8mb4 + port
+# UTF8 config
 sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
 [mysqld]
 port = $DB_PORT
+socket = /run/mysqld/mysqld.sock
 character-set-client-handshake = FALSE
 character-set-server = utf8mb4
 collation-server = utf8mb4_unicode_ci
 
 [mysql]
 default-character-set = utf8mb4
+socket = /run/mysqld/mysqld.sock
 EOF
 
-# MariaDB Startup and Health Check
-# - Enables MariaDB service for boot persistence (systemctl enable).
-# - Restarts to apply config.
-# - Loops up to 60s, testing connection with mysql -e "SELECT 1;" using root creds.
-# - Exits on timeout (common in WSL if ports linger).
-# Purpose: Verifies DB is ready before user creation; handles startup delays.
-# Start MariaDB
-# Initialize data directory only if mysql.user does NOT exist
-# Ensure MariaDB system tables exist
+# Initialize DB if missing
 if [ ! -f "/var/lib/mysql/mysql/user.MYD" ]; then
-  echo -e "${YELLOW}MariaDB system tables not found → wiping and initializing...${NC}"
-  sudo rm -rf /var/lib/mysql/*
-  sudo mkdir -p /var/lib/mysql
-  sudo chown -R mysql:mysql /var/lib/mysql
-
+  echo -e "${YELLOW}MariaDB system tables not found → initializing...${NC}"
+  sudo rm -f /var/lib/mysql/ib_logfile* /var/lib/mysql/ibdata1 || true
   if command -v mariadb-install-db >/dev/null 2>&1; then
     sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql --skip-test-db
   else
@@ -163,31 +158,26 @@ if [ ! -f "/var/lib/mysql/mysql/user.MYD" ]; then
   fi
 fi
 
-# Try starting MariaDB (non-systemd fallback for WSL)
-echo -e "${YELLOW}Starting MariaDB...${NC}"
-sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql --port=$DB_PORT &
-sleep 10
+# Start MariaDB
+if [ "$WSL" = true ]; then
+  echo -e "${YELLOW}WSL detected → starting MariaDB without systemd...${NC}"
+  sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql --port=$DB_PORT --socket=/run/mysqld/mysqld.sock &
+  sleep 5
+else
+  sudo systemctl enable mariadb
+  sudo systemctl restart mariadb
+fi
 
-# Health check
+# Wait until MariaDB is ready
 i=0
-MAX_WAIT=30
-while ! mysqladmin ping >/dev/null 2>&1; do
-  sleep 2
-  i=$((i+2))
+MAX_WAIT=60
+export MYSQL_UNIX_PORT=/run/mysqld/mysqld.sock
+until mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1; do
+  sleep 1
+  i=$((i+1))
   if [ $i -ge $MAX_WAIT ]; then
-    echo -e "${RED}MariaDB failed to start → wiping datadir and retrying init...${NC}"
-    sudo pkill -9 mysqld mariadbd 2>/dev/null || true
-    sudo rm -rf /var/lib/mysql/*
-    sudo mkdir -p /var/lib/mysql
-    sudo chown -R mysql:mysql /var/lib/mysql
-    if command -v mariadb-install-db >/dev/null 2>&1; then
-      sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql --skip-test-db
-    else
-      sudo mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db
-    fi
-    sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql --port=$DB_PORT &
-    sleep 10
-    break
+    echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s.${NC}"
+    exit 1
   fi
 done
 echo -e "${GREEN}MariaDB is up.${NC}"

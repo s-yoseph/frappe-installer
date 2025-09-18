@@ -115,13 +115,13 @@ MYSQL_RUN_DIR=/run/mysqld
 
 # Ensure clean directories
 sudo systemctl stop mariadb 2>/dev/null || true
-sudo mkdir -p $MYSQL_DATA_DIR $MYSQL_RUN_DIR
-sudo chown -R mysql:mysql $MYSQL_DATA_DIR $MYSQL_RUN_DIR
-sudo chmod 750 $MYSQL_DATA_DIR
+sudo mkdir -p "$MYSQL_DATA_DIR" "$MYSQL_RUN_DIR"
+sudo chown -R mysql:mysql "$MYSQL_DATA_DIR" "$MYSQL_RUN_DIR"
+sudo chmod 750 "$MYSQL_DATA_DIR" "$MYSQL_RUN_DIR"
 
-# Remove old data & InnoDB log files
-sudo rm -rf $MYSQL_DATA_DIR/*
-sudo find $MYSQL_DATA_DIR -type f -name "ib*" -exec rm -f {} \; || true
+# Remove old data & InnoDB log files safely
+sudo rm -rf "${MYSQL_DATA_DIR:?}"/*
+sudo find "$MYSQL_DATA_DIR" -type f -name "ib*" -exec rm -f {} \; || true
 
 # UTF8 config
 sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
@@ -131,6 +131,8 @@ socket = $MYSQL_RUN_DIR/mysqld.sock
 character-set-client-handshake = FALSE
 character-set-server = utf8mb4
 collation-server = utf8mb4_unicode_ci
+skip-host-cache
+skip-name-resolve
 
 [mysql]
 default-character-set = utf8mb4
@@ -140,26 +142,26 @@ EOF
 # Initialize MariaDB system tables
 echo -e "${YELLOW}Initializing MariaDB system tables...${NC}"
 if command -v mariadb-install-db >/dev/null 2>&1; then
-  sudo mariadb-install-db --user=mysql --datadir=$MYSQL_DATA_DIR --skip-test-db
+  sudo mariadb-install-db --user=mysql --datadir="$MYSQL_DATA_DIR" --skip-test-db
 else
-  sudo mysql_install_db --user=mysql --datadir=$MYSQL_DATA_DIR --skip-test-db
+  sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" --skip-test-db
 fi
 
 # Start MariaDB for WSL without systemd
 echo -e "${YELLOW}WSL detected → starting MariaDB via mysqld_safe...${NC}"
-sudo mysqld_safe --datadir=$MYSQL_DATA_DIR --user=mysql --port=$DB_PORT --socket=$MYSQL_RUN_DIR/mysqld.sock &
+sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --user=mysql --port="$DB_PORT" --socket="$MYSQL_RUN_DIR/mysqld.sock" &
 sleep 5
 
 # Wait until MariaDB is up
 i=0
 MAX_WAIT=60
-export MYSQL_UNIX_PORT=$MYSQL_RUN_DIR/mysqld.sock
+export MYSQL_UNIX_PORT="$MYSQL_RUN_DIR/mysqld.sock"
 until mysql -u root -e "SELECT 1;" >/dev/null 2>&1; do
   sleep 1
-  i=$((i+1))
-  if [ $i -ge $MAX_WAIT ]; then
+  i=$((i + 1))
+  if [ "$i" -ge "$MAX_WAIT" ]; then
     echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s.${NC}"
-    sudo find $MYSQL_DATA_DIR -name "*.err" -exec cat {} \;
+    sudo find "$MYSQL_DATA_DIR" -name "*.err" -exec cat {} \;
     exit 1
   fi
 done

@@ -109,6 +109,7 @@ yarn -v || true
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 ### ===== MariaDB Setup =====
 ### ===== MariaDB Setup =====
+### ===== MariaDB Setup =====
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 
 MYSQL_DATA_DIR="/var/lib/mysql"
@@ -121,48 +122,46 @@ sudo pkill -9 mysqld || true
 sudo rm -f "$MYSQL_DATA_DIR"/*.pid "$MYSQL_DATA_DIR"/*.sock
 
 # Ensure ownership and permissions
+sudo mkdir -p "$MYSQL_DATA_DIR"
 sudo chown -R mysql:mysql "$MYSQL_DATA_DIR"
 sudo chmod 755 "$MYSQL_DATA_DIR"
 
-# If port is busy, choose a new one
-if sudo lsof -i :$MYSQL_PORT >/dev/null 2>&1; then
-    echo -e "${YELLOW}Port $MYSQL_PORT already in use, switching to 3308...${NC}"
-    MYSQL_PORT=3308
-fi
-
-# Initialize or upgrade depending on state
+# Initialize only if missing
 if [ ! -d "$MYSQL_DATA_DIR/mysql" ]; then
     echo -e "${LIGHT_BLUE}Initializing MariaDB system tables...${NC}"
     sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" > /dev/null
-else
-    echo -e "${LIGHT_BLUE}MariaDB already initialized, will run mysql_upgrade later...${NC}"
 fi
 
-# Start MariaDB
-echo -e "${LIGHT_BLUE}Starting MariaDB via mysqld_safe on port $MYSQL_PORT...${NC}"
-sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --port="$MYSQL_PORT" > "$MYSQL_LOG" 2>&1 &
+start_mariadb() {
+    echo -e "${LIGHT_BLUE}Starting MariaDB on port $MYSQL_PORT...${NC}"
+    sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --port="$MYSQL_PORT" > "$MYSQL_LOG" 2>&1 &
+    for i in {1..60}; do
+        if mysqladmin ping -u root --silent >/dev/null 2>&1; then
+            echo -e "${GREEN}MariaDB is up and running on port $MYSQL_PORT!${NC}"
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
 
-# Wait up to 60s for MariaDB to respond
-for i in {1..60}; do
-    if mysqladmin ping -u root --silent >/dev/null 2>&1; then
-        echo -e "${GREEN}MariaDB is up and running on port $MYSQL_PORT!${NC}"
-        break
+# Try starting MariaDB
+if ! start_mariadb; then
+    echo -e "${YELLOW}MariaDB failed to start — reinitializing data dir...${NC}"
+    sudo systemctl stop mariadb || true
+    sudo rm -rf "$MYSQL_DATA_DIR"/*
+    sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" > /dev/null
+    if ! start_mariadb; then
+        echo -e "${RED}MariaDB failed again. Showing last 50 log lines:${NC}"
+        tail -n 50 "$MYSQL_LOG" || true
+        exit 1
     fi
-    sleep 1
-done
-
-if ! mysqladmin ping -u root --silent >/dev/null 2>&1; then
-    echo -e "${RED}MariaDB did not respond within 60s.${NC}"
-    echo -e "${YELLOW}--- Showing last 50 lines of MariaDB log ---${NC}"
-    tail -n 50 "$MYSQL_LOG" || true
-    exit 1
 fi
 
-# Run upgrade if already initialized
-if [ -d "$MYSQL_DATA_DIR/mysql" ]; then
-    echo -e "${LIGHT_BLUE}Running mysql_upgrade to ensure system tables are up-to-date...${NC}"
-    mysql_upgrade -u root || true
-fi
+# Upgrade if initialized
+echo -e "${LIGHT_BLUE}Running mysql_upgrade...${NC}"
+mysql_upgrade -u root || true
+
 # MariaDB Bench User Creation
 # - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.
 # - Grants full privileges (ALL ON *.*) with GRANT OPTION for bench ops.

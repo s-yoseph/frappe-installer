@@ -109,125 +109,74 @@ yarn -v || true
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 ### ===== MariaDB Setup =====
 
-# MariaDB Environment Preparation
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 sudo mkdir -p /run/mysqld /var/lib/mysql /etc/mysql/conf.d
 sudo chown -R mysql:mysql /run/mysqld /var/lib/mysql
+
+
 
 DB_PORT=3306
 MAX_PORT=3310
 while [ $DB_PORT -le $MAX_PORT ]; do
   PORT_INFO="$(sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\\b" || true)"
   if [ -n "$PORT_INFO" ]; then
-    # Improved PID extraction to handle users:(("mariadbd",pid=32188,fd=17)) format
-    PID="$(echo "$PORT_INFO" | sed -E 's/.*users:\(\("([^"]+)",pid=([0-9]+),.*\)/\2/' | head -1 || true)"
-    if [ -n "$PID" ] && ps -p "$PID" -o comm= 2>/dev/null | grep -qiE "mysql|mariadbd|mysqld"; then
-      echo -e "${YELLOW}Stopping existing MariaDB on port $DB_PORT (PID $PID)...${NC}"
-      if [ "$WSL" = "true" ] || [ "$DEBIAN" = "true" ]; then
-        sudo service mariadb stop || sudo service mysql stop || true
-      else
-        sudo systemctl stop mariadb || sudo systemctl stop mysql || true
-      fi
-      sleep 2
-      if sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\\b" >/dev/null 2>&1; then
-        sudo kill -9 "$PID" || true
-        sleep 2
-      fi
-    else
-      DB_PORT=$((DB_PORT + 1))
-      continue
-    fi
+    PID="$(echo "$PORT_INFO" | awk '{print $6}' | sed -E 's/.*pid=([0-9]+),.*/\1/' || true)"
+    if [ -n "$PID" ] && ps -p "$PID" -o comm= | grep -qiE "mysql|mariadbd|mysqld"; then
+      sudo systemctl stop mariadb || true
+      sleep 1
+      if sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\\b" >/dev/null 2>&1; then
+        sudo kill -9 "$PID" || true
+        sleep 1
+      fi
+    else
+      DB_PORT=$((DB_PORT + 1))
+      continue
+    fi
   fi
   break
 done
 echo -e "${GREEN}Using MariaDB port $DB_PORT.${NC}"
 
-# Clean Up Corrupted Log Files and Reset Data Directory if Needed
-echo -e "${LIGHT_BLUE}Cleaning up corrupted MariaDB log files...${NC}"
-sudo mv /var/lib/mysql/ib_logfile0 /var/lib/mysql/ib_logfile0.backup || true
-sudo mv /var/lib/mysql/ib_logfile1 /var/lib/mysql/ib_logfile1.backup || true
-sudo rm /var/lib/mysql/tc.log || true
 
-# If data directory is corrupted or empty, reset it
-if [ ! -f /var/lib/mysql/ibdata1 ] || ! sudo mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1; then
-  echo -e "${YELLOW}MariaDB data directory corrupted or empty. Resetting...${NC}"
-  sudo systemctl stop mariadb || sudo service mariadb stop || true
-  sudo killall mysqld mariadbd || true
-  sudo mv /var/lib/mysql /var/lib/mysql.backup.$(date +%Y%m%d_%H%M%S) || true
-  sudo mkdir /var/lib/mysql
-  sudo chown -R mysql:mysql /var/lib/mysql
-  sudo mysql_install_db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
-  # Start MariaDB daemonize immediately after reset
-  sudo mysqld_safe --port $DB_PORT --user=mysql --datadir=/var/lib/mysql &
-  sleep 10  # Longer sleep to allow daemon to initialize
-  # Verify daemon is running
-  if ! ps aux | grep -q "[m]ysqld.*--port $DB_PORT"; then
-    echo -e "${RED}MariaDB daemon not running after reset.${NC}"
-    exit 1
-  fi
-  echo -e "${GREEN}MariaDB daemon started after reset.${NC}"
-fi
 
-# MariaDB UTF-8 Configuration (applied after reset)
+# Basic UTF8 config
 sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
 [mysqld]
 port = $DB_PORT
-socket = /run/mysqld/mysqld.sock
 character-set-client-handshake = FALSE
 character-set-server = utf8mb4
+
+character-set-server = utf8mb4
 collation-server = utf8mb4_unicode_ci
+
+
 
 [mysql]
 default-character-set = utf8mb4
 EOF
 
-# MariaDB Root Password Setup (Non-Interactive)
-echo -e "${LIGHT_BLUE}Setting up MariaDB root password...${NC}"
-sudo mysql -u root --port "$DB_PORT" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$ROOT_MYSQL_PASS'; FLUSH PRIVILEGES;" 2>/dev/null || true
 
-# MariaDB Startup and Health Check
+
+# Start MariaDB
 echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
-if [ "$WSL" = "true" ] || [ "$DEBIAN" = "true" ]; then
-  for attempt in {1..3}; do
-    sudo service mariadb start || sudo service mysql start && break
-    echo -e "${YELLOW}MariaDB start attempt $attempt failed, retrying...${NC}"
-    sleep 2
-  done || sudo mysqld_safe --port $DB_PORT --user=mysql --datadir=/var/lib/mysql & || {
-    echo -e "${RED}Failed to start MariaDB after retries.${NC}"
-    sudo journalctl -xeu mariadb.service || sudo journalctl -xeu mysql.service || true
-    exit 1
-  }
-else
-  sudo systemctl enable mariadb || sudo systemctl enable mysql || {
-    echo -e "${YELLOW}systemctl enable failed, trying service...${NC}"
-    sudo service mariadb start || sudo service mysql start
-  }
-  sudo systemctl restart mariadb || sudo systemctl restart mysql || {
-    echo -e "${YELLOW}systemctl restart failed, trying service...${NC}"
-    sudo service mariadb start || sudo service mysql start
-  }
-fi
+sudo systemctl enable mariadb
+sudo systemctl restart mariadb
 
+
+
+# Wait until MariaDB is up
 i=0
-MAX_WAIT=90
-until mysql -u root -p"$ROOT_MYSQL_PASS" --port "$DB_PORT" --socket /run/mysqld/mysqld.sock -e "SELECT 1;" >/dev/null 2>&1; do
+MAX_WAIT=60
+until mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1; do
   sleep 1
   i=$((i+1))
   if [ $i -ge $MAX_WAIT ]; then
-    echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s.${NC}"
-    sudo journalctl -xeu mariadb.service || sudo journalctl -xeu mysql.service || true
-    exit 1
+    echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s.${NC}"
+    exit 1
   fi
 done
 echo -e "${GREEN}MariaDB is up.${NC}"
 
-# MariaDB Bench User Creation
-echo -e "${LIGHT_BLUE}Creating MariaDB bench user...${NC}"
-sudo mysql -u root -p"$ROOT_MYSQL_PASS" --port "$DB_PORT" --socket /run/mysqld/mysqld.sock <<EOF
-CREATE USER IF NOT EXISTS '$MYSQL_USER'@'localhost' IDENTIFIED BY '$MYSQL_PASS';
-GRANT ALL PRIVILEGES ON *.* TO '$MYSQL_USER'@'localhost' WITH GRANT OPTION;
-FLUSH PRIVILEGES;
-EOF
 # MariaDB Bench User Creation
 # - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.
 # - Grants full privileges (ALL ON *.*) with GRANT OPTION for bench ops.
@@ -236,7 +185,17 @@ EOF
 # Purpose: Dedicated user for bench/site creation; avoids root overuse.
 # Gotcha: Assumes ROOT_MYSQL_PASS is set (run sudo mysql_secure_installation first if fresh).
 # Create bench DB user
-
+# Create bench DB user
+echo -e "${LIGHT_BLUE}Creating DB user '${MYSQL_USER}'...${NC}"
+mysql -u root -p"$ROOT_MYSQL_PASS" <<SQL
+CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'localhost' IDENTIFIED BY '${MYSQL_PASS}';
+CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'127.0.0.1' IDENTIFIED BY '${MYSQL_PASS}';
+GRANT ALL PRIVILEGES ON *.* TO '${MYSQL_USER}'@'localhost' WITH GRANT OPTION;
+GRANT ALL PRIVILEGES ON *.* TO '${MYSQL_USER}'@'127.0.0.1' WITH GRANT OPTION;
+CREATE DATABASE IF NOT EXISTS \`${MYSQL_USER}\`;
+FLUSH PRIVILEGES;
+SQL
+echo -e "${GREEN}DB user '${MYSQL_USER}' ensured.${NC}"
 
 # Frappe Bench CLI Installation
 # - Installs pipx via apt for isolated Python tools.

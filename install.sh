@@ -152,8 +152,14 @@ start_mariadb() {
         sleep 1
         i=$((i+1))
         if [ $i -ge $MAX_WAIT ]; then
-            echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s. Showing /tmp/mariadb.log:${NC}"
-            tail -n 50 /tmp/mariadb.log
+            echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s.${NC}"
+            echo -e "${YELLOW}--- /tmp/mariadb.log ---${NC}"
+            tail -n 50 /tmp/mariadb.log || true
+            ERR_LOG="/var/lib/mysql/$(hostname).err"
+            if [ -f "$ERR_LOG" ]; then
+                echo -e "${YELLOW}--- $ERR_LOG ---${NC}"
+                tail -n 50 "$ERR_LOG" || true
+            fi
             return 1
         fi
     done
@@ -172,7 +178,7 @@ if ! start_mariadb; then
     sudo rm -rf /var/lib/mysql/*
     sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql
     if ! start_mariadb; then
-        echo -e "${RED}MariaDB still did not start. Please check /tmp/mariadb.log manually.${NC}"
+        echo -e "${RED}MariaDB still did not start. Please check logs above.${NC}"
         exit 1
     fi
 fi
@@ -190,7 +196,6 @@ CREATE DATABASE IF NOT EXISTS \`${MYSQL_USER}\`;
 FLUSH PRIVILEGES;
 SQL
 echo -e "${GREEN}DB user '${MYSQL_USER}' ensured.${NC}"
-
 
 
 # Frappe Bench CLI Installation

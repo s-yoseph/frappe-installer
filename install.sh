@@ -85,8 +85,13 @@ echo -e "${LIGHT_BLUE}Updating system and installing core packages...${NC}"
 sudo apt update
 sudo apt upgrade -y
 sudo apt install -y git curl wget python3 python3-venv python3-dev python3-pip \
-    redis-server xvfb libfontconfig wkhtmltopdf mariadb-server mariadb-client build-essential jq
+    redis-server xvfb libfontconfig mariadb-server mariadb-client build-essential jq
 
+# Install wkhtmltopdf (official prebuilt .deb for compatibility)
+echo -e "${LIGHT_BLUE}Installing wkhtmltopdf...${NC}"
+cd /tmp
+wget -q https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6-1/wkhtmltox_0.12.6-1.bionic_amd64.deb
+sudo apt install -y ./wkhtmltox_0.12.6-1.bionic_amd64.deb
 # Node.js 18 and Yarn Installation
 # - Adds NodeSource repo for Node.js 18 (Frappe v15 requirement).
 # - Installs Node.js + npm via apt; verifies versions.

@@ -157,6 +157,18 @@ if [ ! -f /var/lib/mysql/ibdata1 ] || ! sudo mysql -u root -p"$ROOT_MYSQL_PASS" 
   sudo mkdir /var/lib/mysql
   sudo chown -R mysql:mysql /var/lib/mysql
   sudo mysql_install_db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
+  # Start MariaDB daemonize immediately after reset
+  sudo /usr/sbin/mysqld --daemonize --port $DB_PORT --user=mysql --datadir=/var/lib/mysql || {
+    echo -e "${RED}Failed to start MariaDB daemon after reset.${NC}"
+    exit 1
+  }
+  sleep 5
+  # Verify daemon is running
+  if ! ps aux | grep -q "[m]ysqld.*--port $DB_PORT"; then
+    echo -e "${RED}MariaDB daemon not running after reset.${NC}"
+    exit 1
+  fi
+  echo -e "${GREEN}MariaDB daemon started after reset.${NC}"
 fi
 
 # MariaDB UTF-8 Configuration (applied after reset)
@@ -174,8 +186,7 @@ EOF
 
 # MariaDB Root Password Setup (Non-Interactive)
 echo -e "${LIGHT_BLUE}Setting up MariaDB root password...${NC}"
-sudo mysqladmin -u root password "$ROOT_MYSQL_PASS" 2>/dev/null || true
-sudo mysql -u root -p"$ROOT_MYSQL_PASS" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$ROOT_MYSQL_PASS'; FLUSH PRIVILEGES;" 2>/dev/null || true
+sudo mysql -u root --port "$DB_PORT" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$ROOT_MYSQL_PASS'; FLUSH PRIVILEGES;" 2>/dev/null || true
 
 # MariaDB Startup and Health Check
 echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"

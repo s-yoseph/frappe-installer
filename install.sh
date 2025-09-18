@@ -109,79 +109,91 @@ yarn -v || true
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 ### ===== MariaDB Setup =====
 
+### ===== MariaDB Setup =====
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
-sudo mkdir -p /run/mysqld /var/lib/mysql /etc/mysql/conf.d
-sudo chown -R mysql:mysql /run/mysqld /var/lib/mysql
 
+MYSQL_DATA_DIR=/var/lib/mysql
+MYSQL_RUN_DIR=/run/mysqld
+MYSQL_SOCKET="$MYSQL_RUN_DIR/mysqld.sock"
+
+# Ensure directories exist with proper permissions
+sudo mkdir -p "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR" /etc/mysql/conf.d
+sudo chown -R mysql:mysql "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR"
+sudo chmod 750 "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR"
+
+# Pick free port
 DB_PORT=3306
 MAX_PORT=3310
-
 while [ $DB_PORT -le $MAX_PORT ]; do
-  PORT_INFO="$(sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\b" || true)"
-  if [ -n "$PORT_INFO" ]; then
-    PID="$(echo "$PORT_INFO" | awk '{print $6}' | sed -E 's/.*pid=([0-9]+),.*/\1/' || true)"
-    if [ -n "$PID" ] && ps -p "$PID" -o comm= | grep -qiE "mysql|mariadbd|mysqld"; then
-      sudo systemctl stop mariadb || true
-      sleep 1
-      if sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\b" >/dev/null 2>&1; then
-        sudo kill -9 "$PID" || true
-        sleep 1
-      fi
-    else
-      DB_PORT=$((DB_PORT + 1))
-      continue
+    PORT_INFO="$(sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\b" || true)"
+    if [ -n "$PORT_INFO" ]; then
+        PID="$(echo "$PORT_INFO" | awk '{print $6}' | sed -E 's/.*pid=([0-9]+),.*/\1/' || true)"
+        if [ -n "$PID" ] && ps -p "$PID" -o comm= | grep -qiE "mysql|mariadbd|mysqld"; then
+            sudo pkill -9 mysqld_safe || true
+            sudo pkill -9 mariadbd || true
+            sleep 2
+            if sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\b" >/dev/null 2>&1; then
+                sudo kill -9 "$PID" || true
+                sleep 1
+            fi
+        else
+            DB_PORT=$((DB_PORT + 1))
+            continue
+        fi
     fi
-  fi
-  break
+    break
 done
 
 echo -e "${GREEN}Using MariaDB port $DB_PORT.${NC}"
 
-# Basic UTF8 config
+# UTF8 config
 sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
 [mysqld]
 port = $DB_PORT
 character-set-client-handshake = FALSE
 character-set-server = utf8mb4
 collation-server = utf8mb4_unicode_ci
+socket = $MYSQL_SOCKET
 
 [mysql]
 default-character-set = utf8mb4
+socket = $MYSQL_SOCKET
 EOF
 
-echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
+# Initialize DB if missing
+if [ ! -d "$MYSQL_DATA_DIR/mysql" ]; then
+    echo -e "${YELLOW}Initializing MariaDB system tables...${NC}"
+    sudo mariadb-install-db --user=mysql --datadir="$MYSQL_DATA_DIR" --skip-test-db
+fi
 
-MYSQL_SOCKET="/run/mysqld/mysqld.sock"
-sudo mkdir -p /run/mysqld
-sudo chown -R mysql:mysql /run/mysqld
-
-echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
+# Clean any stale processes/sockets
 sudo pkill -9 mysqld_safe || true
 sudo pkill -9 mariadbd || true
 sleep 2
 sudo rm -f "$MYSQL_SOCKET"
 
 # Start MariaDB in background
-sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql --port=$DB_PORT --socket="$MYSQL_SOCKET" > /tmp/mariadb.log 2>&1 &
+echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
+sudo mysqld_safe --datadir="$MYSQL_DATA_DIR" --user=mysql --port="$DB_PORT" --socket="$MYSQL_SOCKET" > /tmp/mariadb.log 2>&1 &
 
-
-# Wait until MariaDB is up
+# Wait until MariaDB is up (increase timeout to 120s)
 i=0
-MAX_WAIT=60
-until mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1; do
-  sleep 1
-  i=$((i+1))
-  if [ $i -ge $MAX_WAIT ]; then
-    echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s.${NC}"
-    exit 1
-  fi
+MAX_WAIT=120
+until mysql -u root -S "$MYSQL_SOCKET" -e "SELECT 1;" >/dev/null 2>&1; do
+    sleep 1
+    i=$((i+1))
+    if [ $i -ge $MAX_WAIT ]; then
+        echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s. Check /tmp/mariadb.log${NC}"
+        sudo cat /tmp/mariadb.log
+        exit 1
+    fi
 done
 
-echo -e "${GREEN}MariaDB is up.${NC}"
+echo -e "${GREEN}MariaDB is up on port $DB_PORT.${NC}"
 
-# MariaDB Bench User Creation
+# Create bench DB user
 echo -e "${LIGHT_BLUE}Creating DB user '${MYSQL_USER}'...${NC}"
-mysql -u root -p"$ROOT_MYSQL_PASS" <<SQL
+mysql -u root -S "$MYSQL_SOCKET" <<SQL
 CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'localhost' IDENTIFIED BY '${MYSQL_PASS}';
 CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'127.0.0.1' IDENTIFIED BY '${MYSQL_PASS}';
 GRANT ALL PRIVILEGES ON *.* TO '${MYSQL_USER}'@'localhost' WITH GRANT OPTION;
@@ -191,6 +203,7 @@ FLUSH PRIVILEGES;
 SQL
 
 echo -e "${GREEN}DB user '${MYSQL_USER}' ensured.${NC}"
+
 
 # Frappe Bench CLI Installation
 # - Installs pipx via apt for isolated Python tools.

@@ -109,13 +109,13 @@ yarn -v || true
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 
-# Ensure directories exist
+DB_PORT=3306
+MAX_PORT=3310
+
+# Ensure directories exist and correct permissions
 sudo mkdir -p /run/mysqld /var/lib/mysql /etc/mysql/conf.d
 sudo chown -R mysql:mysql /run/mysqld /var/lib/mysql
 sudo chmod 750 /var/lib/mysql
-
-DB_PORT=3306
-MAX_PORT=3310
 
 # Find free DB port
 while [ $DB_PORT -le $MAX_PORT ]; do
@@ -148,11 +148,14 @@ default-character-set = utf8mb4
 socket = /run/mysqld/mysqld.sock
 EOF
 
-# Wipe any leftover MariaDB data (force clean)
+# Force clean MariaDB data
 echo -e "${YELLOW}Removing old MariaDB data (force clean)...${NC}"
 sudo rm -rf /var/lib/mysql/*
+sudo mkdir -p /var/lib/mysql /run/mysqld
+sudo chown -R mysql:mysql /var/lib/mysql /run/mysqld
+sudo chmod 750 /var/lib/mysql
 
-# Initialize MariaDB
+# Initialize MariaDB system tables
 echo -e "${YELLOW}Initializing MariaDB system tables...${NC}"
 if command -v mariadb-install-db >/dev/null 2>&1; then
   sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql --skip-test-db
@@ -160,11 +163,9 @@ else
   sudo mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db
 fi
 
-# Start MariaDB in WSL without systemd
+# Start MariaDB
 if [ "$WSL" = true ]; then
   echo -e "${YELLOW}WSL detected → starting MariaDB via mysqld_safe...${NC}"
-  sudo mkdir -p /run/mysqld
-  sudo chown mysql:mysql /run/mysqld
   sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql --port=$DB_PORT --socket=/run/mysqld/mysqld.sock &
 else
   sudo systemctl enable mariadb
@@ -175,16 +176,17 @@ fi
 i=0
 MAX_WAIT=60
 export MYSQL_UNIX_PORT=/run/mysqld/mysqld.sock
-until mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1; do
+until mysql -u root -e "SELECT 1;" >/dev/null 2>&1; do
   sleep 1
   i=$((i+1))
   if [ $i -ge $MAX_WAIT ]; then
     echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s.${NC}"
-    cat /var/lib/mysql/*.err
+    sudo cat /var/lib/mysql/*.err
     exit 1
   fi
 done
 echo -e "${GREEN}MariaDB is up.${NC}"
+
 
 # MariaDB Bench User Creation
 # - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.

@@ -148,17 +148,18 @@ sudo mv /var/lib/mysql/ib_logfile0 /var/lib/mysql/ib_logfile0.backup || true
 sudo mv /var/lib/mysql/ib_logfile1 /var/lib/mysql/ib_logfile1.backup || true
 sudo rm /var/lib/mysql/tc.log || true
 
-# If data directory is corrupted, reset it
-if [ -f /var/lib/mysql/ibdata1 ] && ! sudo mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1; then
-  echo -e "${YELLOW}MariaDB data directory corrupted. Resetting...${NC}"
+# If data directory is corrupted or empty, reset it
+if [ ! -f /var/lib/mysql/ibdata1 ] || ! sudo mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1; then
+  echo -e "${YELLOW}MariaDB data directory corrupted or empty. Resetting...${NC}"
   sudo systemctl stop mariadb || sudo service mariadb stop || true
-  sudo mv /var/lib/mysql /var/lib/mysql.backup.$(date +%Y%m%d_%H%M%S)
+  sudo killall mysqld mariadbd || true
+  sudo mv /var/lib/mysql /var/lib/mysql.backup.$(date +%Y%m%d_%H%M%S) || true
   sudo mkdir /var/lib/mysql
   sudo chown -R mysql:mysql /var/lib/mysql
   sudo mysql_install_db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
 fi
 
-# MariaDB UTF-8 Configuration
+# MariaDB UTF-8 Configuration (applied after reset)
 sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
 [mysqld]
 port = $DB_PORT
@@ -219,7 +220,6 @@ CREATE USER IF NOT EXISTS '$MYSQL_USER'@'localhost' IDENTIFIED BY '$MYSQL_PASS';
 GRANT ALL PRIVILEGES ON *.* TO '$MYSQL_USER'@'localhost' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 EOF
-
 # MariaDB Bench User Creation
 # - Executes SQL via heredoc to create/ensure 'frappe' user for localhost/127.0.0.1.
 # - Grants full privileges (ALL ON *.*) with GRANT OPTION for bench ops.

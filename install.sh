@@ -151,13 +151,19 @@ EOF
 
 echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
 
-if [ "$WSL" = true ]; then
-  echo -e "${YELLOW}Detected WSL: using mysqld_safe instead of systemctl.${NC}"
-  sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql --port=$DB_PORT > /tmp/mariadb.log 2>&1 &
-else
-  sudo systemctl enable mariadb
-  sudo systemctl restart mariadb
-fi
+MYSQL_SOCKET="/run/mysqld/mysqld.sock"
+sudo mkdir -p /run/mysqld
+sudo chown -R mysql:mysql /run/mysqld
+
+echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
+sudo pkill -9 mysqld_safe || true
+sudo pkill -9 mariadbd || true
+sleep 2
+sudo rm -f "$MYSQL_SOCKET"
+
+# Start MariaDB in background
+sudo mysqld_safe --datadir=/var/lib/mysql --user=mysql --port=$DB_PORT --socket="$MYSQL_SOCKET" > /tmp/mariadb.log 2>&1 &
+
 
 # Wait until MariaDB is up
 i=0

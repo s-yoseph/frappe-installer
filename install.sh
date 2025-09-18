@@ -110,30 +110,29 @@ yarn -v || true
 
 ### ===== MariaDB Setup =====
 
+### ===== MariaDB Setup =====
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 
 # Ensure directories exist
 sudo mkdir -p /run/mysqld /var/lib/mysql /etc/mysql/conf.d
 sudo chown -R mysql:mysql /run/mysqld /var/lib/mysql
 
-# Pick an available port
+# Kill any running MariaDB processes safely
+sudo pkill -9 mariadbd || true
+sudo pkill -9 mysqld || true
+sudo pkill -9 mysqld_safe || true
+sleep 2
+
+# Remove stale sockets and locks
+MYSQL_SOCKET="/run/mysqld/mysqld.sock"
+sudo rm -f "$MYSQL_SOCKET"
+sudo rm -f /var/lib/mysql/aria_log_control
+sudo rm -f /var/lib/mysql/ibdata1.lock 2>/dev/null || true
+
+# Pick an available port (3306–3310)
 DB_PORT=3306
-MAX_PORT=3310
-while [ $DB_PORT -le $MAX_PORT ]; do
-  PORT_INFO="$(sudo ss -ltnp 2>/dev/null | grep -E ":$DB_PORT\b" || true)"
-  if [ -n "$PORT_INFO" ]; then
-    PID="$(echo "$PORT_INFO" | awk '{print $6}' | sed -E 's/.*pid=([0-9]+),.*/\1/' || true)"
-    if [ -n "$PID" ] && ps -p "$PID" -o comm= | grep -qiE "mysql|mariadbd|mysqld"; then
-      sudo systemctl stop mariadb || true
-      sleep 1
-      sudo kill -9 "$PID" || true
-      sleep 1
-    else
-      DB_PORT=$((DB_PORT + 1))
-      continue
-    fi
-  fi
-  break
+while ss -ltnp 2>/dev/null | grep -q ":$DB_PORT\b"; do
+    DB_PORT=$((DB_PORT + 1))
 done
 echo -e "${GREEN}Using MariaDB port $DB_PORT.${NC}"
 
@@ -149,25 +148,13 @@ collation-server = utf8mb4_unicode_ci
 default-character-set = utf8mb4
 EOF
 
-# Kill any leftover MariaDB processes
-sudo pkill -9 mariadbd || true
-sudo pkill -9 mysqld || true
-sudo pkill -9 mysqld_safe || true
-sleep 2
-
-# Remove stale sockets and locks
-MYSQL_SOCKET="/run/mysqld/mysqld.sock"
-sudo rm -f "$MYSQL_SOCKET"
-sudo rm -f /var/lib/mysql/aria_log_control
-sudo rm -f /var/lib/mysql/ibdata1.lock 2>/dev/null || true
-
-# Initialize MariaDB only if empty
+# Initialize MariaDB only if not already initialized
 if [ ! -d "/var/lib/mysql/mysql" ]; then
-  echo -e "${LIGHT_BLUE}Initializing MariaDB system tables...${NC}"
-  sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql
+    echo -e "${LIGHT_BLUE}Initializing MariaDB system tables...${NC}"
+    sudo mariadb-install-db --user=mysql --datadir=/var/lib/mysql
 fi
 
-# Start MariaDB safely on WSL
+# Start MariaDB safely
 echo -e "${LIGHT_BLUE}Starting MariaDB...${NC}"
 sudo -u mysql mysqld_safe --datadir=/var/lib/mysql --socket="$MYSQL_SOCKET" --port=$DB_PORT > /tmp/mariadb.log 2>&1 &
 
@@ -175,12 +162,12 @@ sudo -u mysql mysqld_safe --datadir=/var/lib/mysql --socket="$MYSQL_SOCKET" --po
 i=0
 MAX_WAIT=120
 until mysql -u root -e "SELECT 1;" >/dev/null 2>&1; do
-  sleep 1
-  i=$((i+1))
-  if [ $i -ge $MAX_WAIT ]; then
-    echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s. Check /tmp/mariadb.log${NC}"
-    exit 1
-  fi
+    sleep 1
+    i=$((i+1))
+    if [ $i -ge $MAX_WAIT ]; then
+        echo -e "${RED}MariaDB did not start within ${MAX_WAIT}s. Check /tmp/mariadb.log${NC}"
+        exit 1
+    fi
 done
 echo -e "${GREEN}MariaDB is up.${NC}"
 
@@ -195,6 +182,7 @@ CREATE DATABASE IF NOT EXISTS \`${MYSQL_USER}\`;
 FLUSH PRIVILEGES;
 SQL
 echo -e "${GREEN}DB user '${MYSQL_USER}' ensured.${NC}"
+
 
 
 

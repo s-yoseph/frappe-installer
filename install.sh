@@ -325,12 +325,14 @@ fi
 echo -e "${GREEN}MariaDB is up and reachable.${NC}"
 
 
-# Wait until MariaDB is ready before doing anything
-echo -e "${LIGHT_BLUE}Waiting for MariaDB to be ready...${NC}"
-until mysqladmin ping -h "127.0.0.1" --silent; do
-  sleep 2
+echo "Waiting for MariaDB..."
+for i in {1..30}; do
+    if mysqladmin ping -h 127.0.0.1 --silent; then
+        echo "MariaDB is ready!"
+        break
+    fi
+    sleep 2
 done
-echo -e "${GREEN}MariaDB is ready!${NC}"
 
 # Create/ensure DB user (use mysql_exec so we pick the best auth method)
 echo -e "${LIGHT_BLUE}Creating DB user '${MYSQL_USER}' if needed...${NC}"
@@ -413,7 +415,7 @@ bench drop-site "$SITE_NAME" --no-backup --force \
   --mariadb-root-password "$ROOT_MYSQL_PASS" || true
 bench new-site "$SITE_NAME" \
   --db-host localhost \
-  --db-port "$DB_PORT" \
+  --db-port 3306 \
   --mariadb-root-username root \
   --mariadb-root-password "$ROOT_MYSQL_PASS" \
   --admin-password "$ADMIN_PASS"

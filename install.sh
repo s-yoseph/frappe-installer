@@ -324,6 +324,14 @@ fi
 
 echo -e "${GREEN}MariaDB is up and reachable.${NC}"
 
+
+# Wait until MariaDB is ready before doing anything
+echo -e "${LIGHT_BLUE}Waiting for MariaDB to be ready...${NC}"
+until mysqladmin ping -h "127.0.0.1" --silent; do
+  sleep 2
+done
+echo -e "${GREEN}MariaDB is ready!${NC}"
+
 # Create/ensure DB user (use mysql_exec so we pick the best auth method)
 echo -e "${LIGHT_BLUE}Creating DB user '${MYSQL_USER}' if needed...${NC}"
 if mysql_exec <<SQL
@@ -341,6 +349,7 @@ else
   print_logs_and_exit
   exit 1
 fi
+
 
 ### ===== End MariaDB Setup =====
 

@@ -240,7 +240,9 @@ start_mariadb_mysqld_safe() {
   sudo rm -f "$MYSQL_SOCKET" /var/lib/mysql/*.pid /var/lib/mysql/*.sock 2>/dev/null || true
 
   # Start as mysql user (crucial: do NOT run mariadbd as root)
-  sudo -u mysql bash -c "nohup mysqld_safe --datadir=$MYSQL_DATA_DIR --socket=$MYSQL_SOCKET --port=$DB_PORT > /tmp/mariadb.log 2>&1 &"
+sudo -u mysql mysqld_safe --datadir=$MYSQL_DATA_DIR --socket=$MYSQL_SOCKET --port=$DB_PORT &
+sleep 1
+tail -n 200 /tmp/mariadb.log
   i=0
   until can_connect_with_sudo || can_connect_with_rootpass; do
     sleep 1; i=$((i+1))

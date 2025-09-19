@@ -120,6 +120,11 @@ sudo mkdir -p "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR" /etc/mysql/conf.d
 sudo chown -R mysql:mysql "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR"
 sudo chmod 750 "$MYSQL_DATA_DIR"
 
+# Stop any existing MariaDB and start it with the correct socket
+sudo systemctl stop mariadb >/dev/null 2>&1 || true
+sudo rm -f "$MYSQL_SOCKET"
+sudo -u mysql mysqld_safe --datadir="$MYSQL_DATA_DIR" --socket="$MYSQL_SOCKET" --port=3307 &
+
 # helper: detect WSL
 is_wsl() {
   grep -qiE "(microsoft|wsl)" /proc/version 2>/dev/null && return 0 || return 1

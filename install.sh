@@ -109,23 +109,37 @@ yarn -v || true
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 ### ===== MariaDB Setup =====
 ### ===== MariaDB Setup (REPLACE YOUR OLD BLOCK WITH THIS) =====
-echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
+# WSL-safe MariaDB startup
+start_mariadb_wsl() {
+    echo -e "${LIGHT_BLUE}Starting MariaDB in WSL-safe mode...${NC}"
 
-MYSQL_DATA_DIR=/var/lib/mysql
-MYSQL_RUN_DIR=/run/mysqld
-MYSQL_SOCKET="$MYSQL_RUN_DIR/mysqld.sock"
-MAX_PORT=3310
+    # Kill any existing MySQL/MariaDB processes
+    sudo pkill -9 mysqld mysqld_safe mariadbd || true
+    sudo rm -f /run/mysqld/mysqld.sock /var/lib/mysql/*.pid /var/lib/mysql/*.sock
 
-# ensure dirs & ownership
-sudo mkdir -p "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR" /etc/mysql/conf.d
-sudo chown -R mysql:mysql "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR"
-sudo chmod 750 "$MYSQL_DATA_DIR"
+    # Ensure directories exist and have correct ownership
+    sudo mkdir -p /run/mysqld
+    sudo chown -R mysql:mysql /run/mysqld /var/lib/mysql
 
-# helper: detect WSL
-is_wsl() {
-  grep -qiE "(microsoft|wsl)" /proc/version 2>/dev/null && return 0 || return 1
+    # Start MariaDB under mysql user
+    sudo -u mysql mysqld_safe --datadir=/var/lib/mysql \
+        --socket=/run/mysqld/mysqld.sock --port=3306 > /tmp/mariadb.log 2>&1 &
+
+    # Wait until MariaDB is ready
+    echo -e "${LIGHT_BLUE}Waiting for MariaDB to be ready...${NC}"
+    for i in {1..30}; do
+        if mysqladmin ping -h 127.0.0.1 --silent; then
+            echo -e "${GREEN}MariaDB is ready!${NC}"
+            break
+        fi
+        sleep 2
+    done
 }
 
+# Call it if WSL
+if [ "$WSL" = true ]; then
+    start_mariadb_wsl
+fi
 # helper: try connecting as root (prefers sudo mysql, falls back to root password)
 can_connect_with_sudo() {
   sudo mysql -e "SELECT 1;" >/dev/null 2>&1

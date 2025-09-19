@@ -407,13 +407,16 @@ fi
 # - || true prevents exit on non-fatal errors (e.g., site not existing).
 # Purpose: Initializes the ERPNext site (mmcy.hrms); uses localhost for DB connection.
 echo -e "${LIGHT_BLUE}Creating site ${SITE_NAME}...${NC}"
-bench drop-site "$SITE_NAME" --no-backup --force --db-root-username "$MYSQL_USER" --db-root-password "$MYSQL_PASS" || true
+# Ensure root connection used
+bench drop-site "$SITE_NAME" --no-backup --force \
+  --mariadb-root-username root \
+  --mariadb-root-password "$ROOT_MYSQL_PASS" || true
 bench new-site "$SITE_NAME" \
   --db-host localhost \
   --db-port "$DB_PORT" \
   --mariadb-root-username root \
-  --mariadb-root-password "$ROOT_MYSQL_PASS"
-  --admin-password "$ADMIN_PASS" || true
+  --mariadb-root-password "$ROOT_MYSQL_PASS" \
+  --admin-password "$ADMIN_PASS"
 
 # Site-Specific DB User Fix
 # - Parses site_config.json for DB name/password using jq.

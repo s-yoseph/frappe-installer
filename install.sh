@@ -370,6 +370,7 @@ if [ ! -d "$BENCH_NAME" ]; then
 fi
 cd "$BENCH_NAME"
 
+
 # Fetching Core Apps (ERPNext, HRMS)
 # - Checks if apps/erpnext or apps/hrms exist; clones from GitHub if not (specified branch).
 # Purpose: Downloads official ERPNext/HRMS for business/HR features; idempotent.
@@ -401,8 +402,8 @@ bench drop-site "$SITE_NAME" --no-backup --force --db-root-username "$MYSQL_USER
 bench new-site "$SITE_NAME" \
   --db-host localhost \
   --db-port "$DB_PORT" \
-  --mariadb-root-username "$MYSQL_USER" \
-  --mariadb-root-password "$MYSQL_PASS" \
+  --mariadb-root-username root \
+  --mariadb-root-password "$ROOT_MYSQL_PASS"
   --admin-password "$ADMIN_PASS" || true
 
 # Site-Specific DB User Fix

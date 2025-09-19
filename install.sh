@@ -25,14 +25,6 @@ USE_LOCAL_APPS=false
 CUSTOM_HR_REPO_BASE="github.com/MMCY-Tech/custom-hrms.git"
 CUSTOM_ASSET_REPO_BASE="github.com/MMCY-Tech/custom-asset-management.git"
 CUSTOM_IT_REPO_BASE="github.com/MMCY-Tech/custom-it-operations.git"
-# Config
-MYSQL_USER="${MYSQL_USER:-frappe}"
-MYSQL_PASS="${MYSQL_PASS:-frappe}"
-MYSQL_DATA_DIR="${MYSQL_DATA_DIR:-/var/lib/mysql}"
-MYSQL_SOCKET="${MYSQL_SOCKET:-/run/mysqld/mysqld.sock}"
-WSL="${WSL:-true}"           # Detect WSL if needed
-MAX_PORT="${MAX_PORT:-3310}"  # Maximum port to scan
-
 
 ### ===== COLORS =====
 # ANSI color codes for user-friendly terminal output.
@@ -115,73 +107,78 @@ yarn -v || true
 #   - Increments port if non-MariaDB process; breaks on free port.
 # Purpose: Handles WSL/Ubuntu port clashes (e.g., existing MySQL); selects a safe DB_PORT.
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
-### ===== MariaDB Setup =====
-# --- Helper functions ---
+### ===== MariaDB Setup  =====
+echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 
+MYSQL_DATA_DIR=/var/lib/mysql
+MYSQL_RUN_DIR=/run/mysqld
+MYSQL_SOCKET="$MYSQL_RUN_DIR/mysqld.sock"
+MAX_PORT=3310
+
+# ensure dirs & ownership
+sudo mkdir -p "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR" /etc/mysql/conf.d
+sudo chown -R mysql:mysql "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR"
+sudo chmod 750 "$MYSQL_DATA_DIR"
+
+# helper: detect WSL
+is_wsl() {
+  grep -qiE "(microsoft|wsl)" /proc/version 2>/dev/null && return 0 || return 1
+}
+
+# helper: try connecting as root (prefers sudo mysql, falls back to root password)
 can_connect_with_sudo() {
-    sudo mysql -e "SELECT 1;" >/dev/null 2>&1
+  sudo mysql -e "SELECT 1;" >/dev/null 2>&1
 }
-
 can_connect_with_rootpass() {
-    if [ -n "${ROOT_MYSQL_PASS:-}" ]; then
-        mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1
-    else
-        return 1
-    fi
+  if [ -n "${ROOT_MYSQL_PASS:-}" ]; then
+    mysql -u root -p"$ROOT_MYSQL_PASS" -e "SELECT 1;" >/dev/null 2>&1
+  else
+    return 1
+  fi
 }
-
 mysql_exec() {
-    if can_connect_with_sudo; then
-        sudo mysql "$@"
-    elif can_connect_with_rootpass; then
-        mysql -u root -p"$ROOT_MYSQL_PASS" "$@"
-    else
-        return 1
-    fi
+  # Use: mysql_exec <<SQL ... SQL
+  if can_connect_with_sudo; then
+    sudo mysql "$@"
+  elif can_connect_with_rootpass; then
+    mysql -u root -p"$ROOT_MYSQL_PASS" "$@"
+  else
+    return 1
+  fi
 }
 
-print_logs_and_exit() {
-    echo "==== /tmp/mariadb.log ===="
-    sudo head -n 200 /tmp/mariadb.log || true
-    ERRLOG="/var/lib/mysql/$(hostname).err"
-    if [ -f "$ERRLOG" ]; then
-        echo
-        echo "==== $ERRLOG ===="
-        sudo head -n 200 "$ERRLOG" || true
-    fi
-}
-
-# --- Detect running MariaDB/MySQL port ---
+# find any running mariadb/mysqld processes and their port
 running_pids="$(pgrep -x mariadbd 2>/dev/null || true) $(pgrep -x mysqld 2>/dev/null || true)"
 running_pids=$(echo "$running_pids" | tr '\n' ' ' | xargs -r)
 
 DB_PORT=""
 if [ -n "$running_pids" ]; then
-    for pid in $running_pids; do
-        port=$(ss -ltnp 2>/dev/null | grep -F "pid=$pid," | awk '{print $4}' | sed -E 's/.*:([0-9]+)$/\1/' | head -n1 || true)
-        if [ -n "$port" ]; then
-            DB_PORT="$port"
-            break
-        fi
-    done
+  for pid in $running_pids; do
+    # find listening port for this pid
+    port=$(ss -ltnp 2>/dev/null | grep -F "pid=$pid," | awk '{print $4}' | sed -E 's/.*:([0-9]+)$/\1/' | head -n1 || true)
+    if [ -n "$port" ]; then
+      DB_PORT="$port"
+      break
+    fi
+  done
 fi
 
-# Pick free port if no running server
+# If no running server detected, pick a free port 3306..MAX_PORT
 if [ -z "$DB_PORT" ]; then
-    p=3306
-    while [ "$p" -le "$MAX_PORT" ]; do
-        if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$p$"; then
-            p=$((p+1))
-            continue
-        fi
-        DB_PORT=$p
-        break
-    done
+  p=3306
+  while [ "$p" -le "$MAX_PORT" ]; do
+    if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$p$"; then
+      p=$((p+1))
+      continue
+    fi
+    DB_PORT=$p
+    break
+  done
 fi
 
 echo -e "${YELLOW}Using MariaDB port: $DB_PORT${NC}"
 
-# Write minimal UTF8 config
+# write minimal UTF8 config for our port & socket
 sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
 [mysqld]
 port = $DB_PORT
@@ -197,78 +194,136 @@ default-character-set = utf8mb4
 socket = $MYSQL_SOCKET
 EOF
 
-# --- Start functions ---
-start_mariadb_systemctl() {
-    echo -e "${LIGHT_BLUE}Starting MariaDB via systemctl...${NC}"
-    sudo systemctl enable mariadb >/dev/null 2>&1 || true
-    sudo systemctl restart mariadb >/tmp/mariadb.log 2>&1 || true
+# small helpers for start/wait/logs
+start_wait_check_timeout=60
+print_logs_and_exit() {
+  echo "==== /tmp/mariadb.log ===="
+  sudo sed -n '1,200p' /tmp/mariadb.log 2>/dev/null || true
+  ERRLOG="/var/lib/mysql/$(hostname).err"
+  if [ -f "$ERRLOG" ]; then
+    echo
+    echo "==== $ERRLOG ===="
+    sudo sed -n '1,200p' "$ERRLOG" 2>/dev/null || true
+  fi
+}
 
-    i=0
-    until can_connect_with_sudo || can_connect_with_rootpass; do
-        sleep 1
-        i=$((i+1))
-        if [ $i -ge 60 ]; then
-            echo -e "${RED}MariaDB did not start within 60s (systemctl).${NC}"
-            print_logs_and_exit
-            return 1
-        fi
-    done
-    return 0
+start_mariadb_systemctl() {
+  echo -e "${LIGHT_BLUE}Starting MariaDB via systemctl...${NC}"
+  sudo systemctl enable mariadb >/dev/null 2>&1 || true
+  sudo systemctl restart mariadb >/tmp/mariadb.log 2>&1 || true
+
+  i=0
+  until can_connect_with_sudo || can_connect_with_rootpass; do
+    sleep 1; i=$((i+1))
+    if [ $i -ge $start_wait_check_timeout ]; then
+      echo -e "${RED}MariaDB did not start within ${start_wait_check_timeout}s (systemctl).${NC}"
+      echo "Check /tmp/mariadb.log and mariadb error log:"
+      sudo cat /tmp/mariadb.log 2>/dev/null || true
+      return 1
+    fi
+  done
+  return 0
 }
 
 start_mariadb_mysqld_safe() {
-    echo -e "${LIGHT_BLUE}Starting MariaDB with mysqld_safe (WSL or fallback)...${NC}"
+  echo -e "${LIGHT_BLUE}Starting MariaDB with mysqld_safe (WSL or fallback)...${NC}"
 
-    # Kill stale processes
-    for p in mysqld_safe mariadbd mysqld; do
-        pids="$(pgrep -x "$p" 2>/dev/null || true)"
-        if [ -n "$pids" ]; then
-            echo -e "${YELLOW}Killing stale process $p: $pids${NC}"
-            sudo kill -9 $pids >/dev/null 2>&1 || true
-        fi
-    done
+  # Kill stale processes (careful to only kill exact pids)
+  for p in mysqld_safe mariadbd mysqld; do
+    pids="$(pgrep -x "$p" 2>/dev/null || true)"
+    if [ -n "$pids" ]; then
+      echo -e "${YELLOW}Killing stale process $p: $pids${NC}"
+      sudo kill -9 $pids >/dev/null 2>&1 || true
+    fi
+  done
+  sleep 1
+  sudo rm -f "$MYSQL_SOCKET" /var/lib/mysql/*.pid /var/lib/mysql/*.sock 2>/dev/null || true
 
-    sleep 1
-    sudo rm -f "$MYSQL_SOCKET" /var/lib/mysql/*.pid /var/lib/mysql/*.sock 2>/dev/null || true
-
-    sudo -u mysql bash -c "nohup mysqld_safe --datadir=$MYSQL_DATA_DIR --socket=$MYSQL_SOCKET --port=$DB_PORT > /tmp/mariadb.log 2>&1 &"
-
-    i=0
-    until can_connect_with_sudo || can_connect_with_rootpass; do
-        sleep 1
-        i=$((i+1))
-        if [ $i -ge 60 ]; then
-            echo -e "${RED}MariaDB did not start within 60s (mysqld_safe).${NC}"
-            print_logs_and_exit
-            return 1
-        fi
-    done
-    return 0
+  # Start as mysql user (crucial: do NOT run mariadbd as root)
+  sudo -u mysql bash -c "nohup mysqld_safe --datadir=$MYSQL_DATA_DIR --socket=$MYSQL_SOCKET --port=$DB_PORT > /tmp/mariadb.log 2>&1 &"
+  i=0
+  until can_connect_with_sudo || can_connect_with_rootpass; do
+    sleep 1; i=$((i+1))
+    if [ $i -ge $start_wait_check_timeout ]; then
+      echo -e "${RED}MariaDB did not start within ${start_wait_check_timeout}s (mysqld_safe).${NC}"
+      return 1
+    fi
+  done
+  return 0
 }
 
-# --- Initialize DB if needed ---
+# initialize DB dir only if needed
 if [ ! -d "$MYSQL_DATA_DIR/mysql" ] || [ -z "$(ls -A "$MYSQL_DATA_DIR" 2>/dev/null)" ]; then
-    echo -e "${YELLOW}Initializing MariaDB system tables (first time)...${NC}"
-    if command -v mariadb-install-db >/dev/null 2>&1; then
-        sudo mariadb-install-db --user=mysql --datadir="$MYSQL_DATA_DIR" >/tmp/mariadb.log 2>&1 || true
-    else
-        sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" >/tmp/mariadb.log 2>&1 || true
-    fi
+  echo -e "${YELLOW}Initializing MariaDB system tables (first time)...${NC}"
+  if command -v mariadb-install-db >/dev/null 2>&1; then
+    sudo mariadb-install-db --user=mysql --datadir="$MYSQL_DATA_DIR" >/tmp/mariadb.log 2>&1 || true
+  else
+    sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" >/tmp/mariadb.log 2>&1 || true
+  fi
 fi
 
-# --- Start MariaDB ---
+# If there's already a server running we prefer to use it rather than starting a second
 if can_connect_with_sudo || can_connect_with_rootpass; then
-    echo -e "${GREEN}MariaDB is already running.${NC}"
+  echo -e "${GREEN}MariaDB is already running and reachable. Using existing server.${NC}"
 else
-    if ! start_mariadb_systemctl && ! start_mariadb_mysqld_safe; then
-        echo -e "${RED}MariaDB failed to start.${NC}"
-        exit 1
+  # Start server according to environment
+  if ! is_wsl && command -v systemctl >/dev/null 2>&1; then
+    if ! start_mariadb_systemctl; then
+      echo -e "${YELLOW}systemctl start failed — trying mysqld_safe fallback...${NC}"
+      if ! start_mariadb_mysqld_safe; then
+        echo -e "${RED}Initial start attempts failed. Will attempt a safe re-init (backup existing datadir) and restart once.${NC}"
+        TIMESTAMP=$(date +%s)
+        BACKUP_DIR="/var/lib/mysql_backup_$TIMESTAMP"
+        echo -e "${YELLOW}Backing up current datadir to $BACKUP_DIR${NC}"
+        sudo systemctl stop mariadb >/dev/null 2>&1 || true
+        sudo mv "$MYSQL_DATA_DIR" "$BACKUP_DIR"
+        sudo mkdir -p "$MYSQL_DATA_DIR"
+        sudo chown -R mysql:mysql "$MYSQL_DATA_DIR"
+        echo -e "${YELLOW}Running fresh mariadb-install-db after backup...${NC}"
+        if command -v mariadb-install-db >/dev/null 2>&1; then
+          sudo mariadb-install-db --user=mysql --datadir="$MYSQL_DATA_DIR" >/tmp/mariadb.log 2>&1 || true
+        else
+          sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" >/tmp/mariadb.log 2>&1 || true
+        fi
+        # try systemctl first
+        if ! start_mariadb_systemctl; then
+          # fallback to mysqld_safe
+          if ! start_mariadb_mysqld_safe; then
+            echo -e "${RED}MariaDB still won't start after re-init. See logs below:${NC}"
+            print_logs_and_exit
+            exit 1
+          fi
+        fi
+      fi
     fi
+  else
+    # WSL or no systemctl: start using mysqld_safe under mysql user
+    if ! start_mariadb_mysqld_safe; then
+      echo -e "${YELLOW}mysqld_safe initial start failed. Attempting backup + re-init...${NC}"
+      TIMESTAMP=$(date +%s)
+      BACKUP_DIR="/var/lib/mysql_backup_$TIMESTAMP"
+      sudo pkill -9 mysqld_safe || true
+      sudo pkill -9 mariadbd || true
+      sudo mv "$MYSQL_DATA_DIR" "$BACKUP_DIR" || true
+      sudo mkdir -p "$MYSQL_DATA_DIR"
+      sudo chown -R mysql:mysql "$MYSQL_DATA_DIR"
+      if command -v mariadb-install-db >/dev/null 2>&1; then
+        sudo mariadb-install-db --user=mysql --datadir="$MYSQL_DATA_DIR" >/tmp/mariadb.log 2>&1 || true
+      else
+        sudo mysql_install_db --user=mysql --datadir="$MYSQL_DATA_DIR" >/tmp/mariadb.log 2>&1 || true
+      fi
+      if ! start_mariadb_mysqld_safe; then
+        echo -e "${RED}MariaDB still won't start after re-init. See logs below:${NC}"
+        print_logs_and_exit
+        exit 1
+      fi
+    fi
+  fi
 fi
 
 echo -e "${GREEN}MariaDB is up and reachable.${NC}"
 
-# --- Create DB user ---
+# Create/ensure DB user (use mysql_exec so we pick the best auth method)
 echo -e "${LIGHT_BLUE}Creating DB user '${MYSQL_USER}' if needed...${NC}"
 if mysql_exec <<SQL
 CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'localhost' IDENTIFIED BY '${MYSQL_PASS}';
@@ -279,16 +334,15 @@ CREATE DATABASE IF NOT EXISTS \`${MYSQL_USER}\`;
 FLUSH PRIVILEGES;
 SQL
 then
-    echo -e "${GREEN}DB user '${MYSQL_USER}' ensured.${NC}"
+  echo -e "${GREEN}DB user '${MYSQL_USER}' ensured.${NC}"
 else
-    echo -e "${RED}Failed to create DB user.${NC}"
-    print_logs_and_exit
-    exit 1
+  echo -e "${RED}Failed to create DB user. Please check MariaDB access and logs above.${NC}"
+  print_logs_and_exit
+  exit 1
 fi
 
-echo -e "${GREEN}MariaDB setup complete.${NC}"
-
 ### ===== End MariaDB Setup =====
+
 
 
 # Frappe Bench CLI Installation

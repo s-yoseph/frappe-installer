@@ -70,15 +70,10 @@ fi
 # Purpose: Securely fetches private custom apps without exposing credentials in console/history.
 # Tip: Set export GITHUB_TOKEN=ghp_... before running to skip prompt.
 if [ "${USE_LOCAL_APPS}" = "false" ]; then
-  # Always ask for the token (don’t rely on env var being set)
-  read -s -p "Enter your GitHub Personal Access Token (with repo read access): " GITHUB_TOKEN
-  echo
-
-  if [ -z "$GITHUB_TOKEN" ]; then
-    echo "❌ No token entered. Exiting..."
-    exit 1
+  if [ -z "${GITHUB_TOKEN:-}" ]; then
+    read -s -p "Enter your GitHub Personal Access Token (with repo read access): " GITHUB_TOKEN
+    echo
   fi
-
   GITHUB_USER="token" # Dummy user for HTTPS auth; token acts as both
   CUSTOM_HR_REPO="https://${GITHUB_USER}:${GITHUB_TOKEN}@${CUSTOM_HR_REPO_BASE}"
   CUSTOM_ASSET_REPO="https://${GITHUB_USER}:${GITHUB_TOKEN}@${CUSTOM_ASSET_REPO_BASE}"

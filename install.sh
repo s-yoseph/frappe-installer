@@ -69,16 +69,20 @@ fi
 # - No echoes of URLs or tokens; suppresses git output later to hide in logs.
 # Purpose: Securely fetches private custom apps without exposing credentials in console/history.
 # Tip: Set export GITHUB_TOKEN=ghp_... before running to skip prompt.
-if [ "${USE_LOCAL_APPS}" = "false" ]; then
-  if [ -z "${GITHUB_TOKEN:-}" ]; then
-    read -s -p "Enter your GitHub Personal Access Token (with repo read access): " GITHUB_TOKEN
-    echo
-  fi
-  GITHUB_USER="token" # Dummy user for HTTPS auth; token acts as both
+# Prompt for GitHub token for custom repos
+if [ -z "${GITHUB_TOKEN:-}" ]; then
+  read -s -p "Enter your GitHub Personal Access Token (with repo read access): " GITHUB_TOKEN
+  echo
+fi
+
+# Only build URLs if not using local apps
+if [ "${USE_LOCAL_APPS:-false}" = "false" ]; then
+  GITHUB_USER="token" # dummy user for HTTPS auth
   CUSTOM_HR_REPO="https://${GITHUB_USER}:${GITHUB_TOKEN}@${CUSTOM_HR_REPO_BASE}"
   CUSTOM_ASSET_REPO="https://${GITHUB_USER}:${GITHUB_TOKEN}@${CUSTOM_ASSET_REPO_BASE}"
   CUSTOM_IT_REPO="https://${GITHUB_USER}:${GITHUB_TOKEN}@${CUSTOM_IT_REPO_BASE}"
 fi
+
 
 # System Update and Core Package Installation
 # - Runs apt update/upgrade to ensure latest packages.

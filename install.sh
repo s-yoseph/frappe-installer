@@ -70,9 +70,10 @@ fi
 # Purpose: Securely fetches private custom apps without exposing credentials in console/history.
 # Tip: Set export GITHUB_TOKEN=ghp_... before running to skip prompt.
 # Prompt for GitHub token for custom repos
+# Prompt for GitHub token for custom repos if not set
 if [ -z "${GITHUB_TOKEN:-}" ]; then
-  read -s -p "Enter your GitHub Personal Access Token (with repo read access): " GITHUB_TOKEN
-  echo
+    read -s -p "Enter your GitHub Personal Access Token (with repo read access): " GITHUB_TOKEN </dev/tty
+    echo
 fi
 
 # Only build URLs if not using local apps

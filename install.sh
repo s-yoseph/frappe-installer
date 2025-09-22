@@ -388,8 +388,12 @@ bench --site "$SITE_NAME" install-app mmcy_it_operations
 # - Runs bench migrate to apply all app updates, schemas, and restored fixtures to the DB.
 # Purpose: Syncs everything post-install; essential for fixtures and patches.
 # Run migrate to apply changes and fixtures
-echo -e "${LIGHT_BLUE}Running migrate...${NC}"
-bench --site "$SITE_NAME" migrate
+
+
+#echo -e "${LIGHT_BLUE}Running migrate...${NC}"
+#bench --site "$SITE_NAME" migrate
+
+
 # Asset Build
 # - Compiles JS/CSS assets for the front-end.
 # Purpose: Prepares UI; runs once after migrate.

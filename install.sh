@@ -118,6 +118,24 @@ MYSQL_DATA_DIR=/var/lib/mysql
 MYSQL_RUN_DIR=/run/mysqld
 MYSQL_SOCKET="$MYSQL_RUN_DIR/mysqld.sock"
 MAX_PORT=3310
+# Reset main config to defaults to avoid overrides from previous installs
+echo -e "${YELLOW}Resetting MariaDB main config to defaults...${NC}"
+CONFIG_FILE="/etc/mysql/mariadb.conf.d/50-server.cnf"
+if grep -q "^datadir" "$CONFIG_FILE"; then
+  sudo sed -i "s|^datadir\s*=.*|datadir = $MYSQL_DATA_DIR|" "$CONFIG_FILE"
+else
+  echo "datadir = $MYSQL_DATA_DIR" | sudo tee -a "$CONFIG_FILE" > /dev/null
+fi
+if grep -q "^socket" "$CONFIG_FILE"; then
+  sudo sed -i "s|^socket\s*=.*|socket = $MYSQL_SOCKET|" "$CONFIG_FILE"
+else
+  echo "socket = $MYSQL_SOCKET" | sudo tee -a "$CONFIG_FILE" > /dev/null
+fi
+if grep -q "^port" "$CONFIG_FILE"; then
+  sudo sed -i 's|^port\s*=.*|port = 3306|' "$CONFIG_FILE"
+else
+  echo "port = 3306" | sudo tee -a "$CONFIG_FILE" > /dev/null
+fi
 # ensure dirs & ownership
 sudo mkdir -p "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR" /etc/mysql/conf.d
 sudo chown -R mysql:mysql "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR"
@@ -169,6 +187,8 @@ fi
 # Remove service overrides to ensure standard config
 sudo rm -rf /etc/systemd/system/mariadb.service.d/ 2>/dev/null || true
 sudo systemctl daemon-reload 2>/dev/null || true
+# Clear any custom conf.d files
+sudo rm -f /etc/mysql/conf.d/*.cnf
 # write minimal UTF8 config for our port & socket
 sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
 [mysqld]

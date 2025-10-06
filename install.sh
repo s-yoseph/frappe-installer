@@ -153,6 +153,14 @@ mysql_exec() {
     return 1
   fi
 }
+
+log_mariadb_status() {
+  echo -e "${YELLOW}Checking MariaDB status...${NC}"
+  sudo systemctl status mariadb --no-pager -l || true
+  echo -e "${YELLOW}Checking MariaDB logs...${NC}"
+  sudo journalctl -u mariadb -n 30 --no-pager || true
+}
+
 DB_PORT=3306
 echo -e "${YELLOW}Using fixed MariaDB port: $DB_PORT (checking for conflicts)...${NC}"
 
@@ -179,7 +187,8 @@ default-character-set = utf8mb4
 socket = $MYSQL_SOCKET
 EOF
 # small helpers for start/wait/logs
-start_wait_check_timeout=60
+start_wait_check_timeout=120
+
 print_logs_and_exit() {
   echo "==== /tmp/mariadb.log ===="
   sudo sed -n '1,200p' /tmp/mariadb.log 2>/dev/null || true
@@ -193,8 +202,18 @@ print_logs_and_exit() {
 echo -e "${YELLOW}Cleaning up any stale MariaDB processes and sockets...${NC}"
 sudo systemctl stop mariadb mysql >/dev/null 2>&1 || true
 sudo killall -9 mysqld mariadbd mysqld_safe >/dev/null 2>&1 || true
-sudo rm -f "$MYSQL_SOCKET" /var/lib/mysql/*.pid /var/lib/mysql/*.sock /var/lib/mysql/*.err /tmp/mariadb.log >/dev/null 2>&1 || true
-start_wait_check_timeout=60
+sudo rm -f "$MYSQL_SOCKET" /var/lib/mysql/*.pid /var/lib/mysql/*.sock /tmp/mariadb.log >/dev/null 2>&1 || true
+
+if ! command -v mariadbd >/dev/null 2>&1 && ! command -v mysqld >/dev/null 2>&1; then
+  echo -e "${RED}MariaDB server binary not found. Installation may be incomplete.${NC}"
+  echo "Try: sudo apt install --reinstall mariadb-server"
+  exit 1
+fi
+
+if [ -d "$MYSQL_DATA_DIR" ]; then
+  sudo chown -R mysql:mysql "$MYSQL_DATA_DIR"
+  sudo chmod 750 "$MYSQL_DATA_DIR"
+fi
 
 # Initialize DB dir only if needed
 if [ ! -d "$MYSQL_DATA_DIR/mysql" ] || [ -z "$(ls -A "$MYSQL_DATA_DIR" 2>/dev/null)" ]; then
@@ -214,20 +233,41 @@ fi
 # Start via systemctl
 echo -e "${LIGHT_BLUE}Starting MariaDB via systemctl...${NC}"
 sudo systemctl enable mariadb >/dev/null 2>&1 || true
-sudo systemctl restart mariadb >/tmp/mariadb.log 2>&1
+
+if ! sudo systemctl is-enabled mariadb >/dev/null 2>&1; then
+  echo -e "${RED}Failed to enable mariadb service${NC}"
+  exit 1
+fi
+
+if ! sudo systemctl restart mariadb 2>&1 | tee /tmp/mariadb.log; then
+  echo -e "${RED}systemctl restart failed. Checking status...${NC}"
+  log_mariadb_status
+  exit 1
+fi
+
+sleep 2
+if ! sudo systemctl is-active mariadb >/dev/null 2>&1; then
+  echo -e "${RED}MariaDB service is not active after restart${NC}"
+  log_mariadb_status
+  exit 1
+fi
+
+echo -n "Waiting for MariaDB to accept connections"
 i=0
 until can_connect_with_sudo || can_connect_with_rootpass; do
-  sleep 1; i=$((i+1))
+  echo -n "."  # Show progress
+  sleep 2; i=$((i+2))
   if [ $i -ge $start_wait_check_timeout ]; then
+    echo
     echo -e "${RED}MariaDB did not start within ${start_wait_check_timeout}s.${NC}"
-    echo "Check logs:"
-    cat /tmp/mariadb.log
-    ERRLOG="/var/lib/mysql/$(hostname).err"
-    [ -f "$ERRLOG" ] && cat "$ERRLOG"
+    log_mariadb_status
+    print_logs_and_exit
     exit 1
   fi
 done
+echo  # New line after dots
 echo -e "${GREEN}MariaDB is up and reachable.${NC}"
+
 # Set root password if not already set (for consistent auth in bench commands)
 if can_connect_with_sudo && ! can_connect_with_rootpass; then
   echo -e "${LIGHT_BLUE}Setting MariaDB root password to '$ROOT_MYSQL_PASS'...${NC}"

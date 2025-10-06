@@ -75,7 +75,6 @@ if [ -z "${GITHUB_TOKEN:-}" ]; then
     read -s -p "Enter your GitHub Personal Access Token (with repo read access): " GITHUB_TOKEN </dev/tty
     echo
 fi
-
 # Only build URLs if not using local apps
 if [ "${USE_LOCAL_APPS:-false}" = "false" ]; then
   GITHUB_USER="token" # dummy user for HTTPS auth
@@ -83,8 +82,6 @@ if [ "${USE_LOCAL_APPS:-false}" = "false" ]; then
   CUSTOM_ASSET_REPO="https://${GITHUB_USER}:${GITHUB_TOKEN}@${CUSTOM_ASSET_REPO_BASE}"
   CUSTOM_IT_REPO="https://${GITHUB_USER}:${GITHUB_TOKEN}@${CUSTOM_IT_REPO_BASE}"
 fi
-
-
 # System Update and Core Package Installation
 # - Runs apt update/upgrade to ensure latest packages.
 # - Installs Ubuntu/WSL essentials: Git/curl/wget for downloads; Python3 + venv/pip/dev for Frappe runtime;
@@ -153,17 +150,14 @@ mysql_exec() {
     return 1
   fi
 }
-
 log_mariadb_status() {
   echo -e "${YELLOW}Checking MariaDB status...${NC}"
   sudo systemctl status mariadb --no-pager -l || true
   echo -e "${YELLOW}Checking MariaDB logs...${NC}"
   sudo journalctl -u mariadb -n 30 --no-pager || true
 }
-
 DB_PORT=3306
 echo -e "${YELLOW}Using fixed MariaDB port: $DB_PORT (checking for conflicts)...${NC}"
-
 # Check for port conflict
 if ss -ltn | grep -q ":$DB_PORT "; then
   conflicting_pid=$(ss -ltnp | grep ":$DB_PORT " | awk -F'pid=' '{print $2}' | awk -F, '{print $1}')
@@ -172,9 +166,13 @@ if ss -ltn | grep -q ":$DB_PORT "; then
     sudo kill -9 $conflicting_pid || true
   fi
 fi
+# Remove service overrides to ensure standard config
+sudo rm -rf /etc/systemd/system/mariadb.service.d/ 2>/dev/null || true
+sudo systemctl daemon-reload 2>/dev/null || true
 # write minimal UTF8 config for our port & socket
 sudo tee /etc/mysql/conf.d/frappe.cnf > /dev/null <<EOF
 [mysqld]
+datadir = $MYSQL_DATA_DIR
 port = $DB_PORT
 socket = $MYSQL_SOCKET
 character-set-client-handshake = FALSE
@@ -188,7 +186,6 @@ socket = $MYSQL_SOCKET
 EOF
 # small helpers for start/wait/logs
 start_wait_check_timeout=120
-
 print_logs_and_exit() {
   echo "==== /tmp/mariadb.log ===="
   sudo sed -n '1,200p' /tmp/mariadb.log 2>/dev/null || true
@@ -203,18 +200,16 @@ echo -e "${YELLOW}Cleaning up any stale MariaDB processes and sockets...${NC}"
 sudo systemctl stop mariadb mysql >/dev/null 2>&1 || true
 sudo killall -9 mysqld mariadbd mysqld_safe >/dev/null 2>&1 || true
 sudo rm -f "$MYSQL_SOCKET" /var/lib/mysql/*.pid /var/lib/mysql/*.sock /tmp/mariadb.log >/dev/null 2>&1 || true
-
+sudo rm -rf /srv/mariadb_* 2>/dev/null || true
 if ! command -v mariadbd >/dev/null 2>&1 && ! command -v mysqld >/dev/null 2>&1; then
   echo -e "${RED}MariaDB server binary not found. Installation may be incomplete.${NC}"
   echo "Try: sudo apt install --reinstall mariadb-server"
   exit 1
 fi
-
 if [ -d "$MYSQL_DATA_DIR" ]; then
   sudo chown -R mysql:mysql "$MYSQL_DATA_DIR"
   sudo chmod 750 "$MYSQL_DATA_DIR"
 fi
-
 # Initialize DB dir only if needed
 if [ ! -d "$MYSQL_DATA_DIR/mysql" ] || [ -z "$(ls -A "$MYSQL_DATA_DIR" 2>/dev/null)" ]; then
   echo -e "${YELLOW}Initializing MariaDB system tables (first time)...${NC}"
@@ -229,33 +224,28 @@ if [ ! -d "$MYSQL_DATA_DIR/mysql" ] || [ -z "$(ls -A "$MYSQL_DATA_DIR" 2>/dev/nu
     exit 1
   fi
 fi
-
 # Start via systemctl
 echo -e "${LIGHT_BLUE}Starting MariaDB via systemctl...${NC}"
 sudo systemctl enable mariadb >/dev/null 2>&1 || true
-
 if ! sudo systemctl is-enabled mariadb >/dev/null 2>&1; then
   echo -e "${RED}Failed to enable mariadb service${NC}"
   exit 1
 fi
-
 if ! sudo systemctl restart mariadb 2>&1 | tee /tmp/mariadb.log; then
   echo -e "${RED}systemctl restart failed. Checking status...${NC}"
   log_mariadb_status
   exit 1
 fi
-
 sleep 2
 if ! sudo systemctl is-active mariadb >/dev/null 2>&1; then
   echo -e "${RED}MariaDB service is not active after restart${NC}"
   log_mariadb_status
   exit 1
 fi
-
 echo -n "Waiting for MariaDB to accept connections"
 i=0
 until can_connect_with_sudo || can_connect_with_rootpass; do
-  echo -n "."  # Show progress
+  echo -n "." # Show progress
   sleep 2; i=$((i+2))
   if [ $i -ge $start_wait_check_timeout ]; then
     echo
@@ -265,9 +255,8 @@ until can_connect_with_sudo || can_connect_with_rootpass; do
     exit 1
   fi
 done
-echo  # New line after dots
+echo # New line after dots
 echo -e "${GREEN}MariaDB is up and reachable.${NC}"
-
 # Set root password if not already set (for consistent auth in bench commands)
 if can_connect_with_sudo && ! can_connect_with_rootpass; then
   echo -e "${LIGHT_BLUE}Setting MariaDB root password to '$ROOT_MYSQL_PASS'...${NC}"
@@ -429,8 +418,6 @@ bench --site "$SITE_NAME" install-app mmcy_it_operations
 # Purpose: Syncs everything post-install; essential for fixtures and patches.
 echo -e "${LIGHT_BLUE}Running migrate...${NC}"
 bench --site "$SITE_NAME" migrate
-
-
 # Asset Build
 # - Compiles JS/CSS assets for the front-end.
 # Purpose: Prepares UI; runs once after migrate.

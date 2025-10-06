@@ -88,8 +88,8 @@ fi
 # System Update and Core Package Installation
 # - Runs apt update/upgrade to ensure latest packages.
 # - Installs Ubuntu/WSL essentials: Git/curl/wget for downloads; Python3 + venv/pip/dev for Frappe runtime;
-#Redis for background jobs; xvfb/libfontconfig/wkhtmltopdf for PDF generation; MariaDB for database;
-#build-essential for compiling; jq for JSON parsing (used later for config).
+# Redis for background jobs; xvfb/libfontconfig/wkhtmltopdf for PDF generation; MariaDB for database;
+# build-essential for compiling; jq for JSON parsing (used later for config).
 # Purpose: Prepares the environment; fails fast if sudo access is denied.
 echo -e "${LIGHT_BLUE}Updating system and installing core packages...${NC}"
 sudo apt update
@@ -427,11 +427,8 @@ bench --site "$SITE_NAME" install-app mmcy_it_operations
 # Migration for Schema and Fixtures
 # - Runs bench migrate to apply all app updates, schemas, and restored fixtures to the DB.
 # Purpose: Syncs everything post-install; essential for fixtures and patches.
-# Run migrate to apply changes and fixtures
-
-
-#echo -e "${LIGHT_BLUE}Running migrate...${NC}"
-#bench --site "$SITE_NAME" migrate
+echo -e "${LIGHT_BLUE}Running migrate...${NC}"
+bench --site "$SITE_NAME" migrate
 
 
 # Asset Build

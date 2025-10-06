@@ -92,7 +92,7 @@ echo -e "${LIGHT_BLUE}Updating system and installing core packages...${NC}"
 sudo apt update
 sudo apt upgrade -y
 sudo apt install -y git curl wget python3 python3-venv python3-dev python3-pip \
-    redis-server xvfb libfontconfig wkhtmltopdf mariadb-server mariadb-client build-essential jq
+    redis-server xvfb libfontconfig wkhtmltopdf build-essential jq
 # Node.js 18 and Yarn Installation
 # - Adds NodeSource repo for Node.js 18 (Frappe v15 requirement).
 # - Installs Node.js + npm via apt; verifies versions.
@@ -114,28 +114,18 @@ yarn -v || true
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 ### ===== MariaDB Setup =====
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
+# Purge and reinstall MariaDB for a completely clean slate
+echo -e "${YELLOW}Purging and reinstalling MariaDB for clean configuration...${NC}"
+sudo systemctl stop mariadb mysql >/dev/null 2>&1 || true
+sudo apt purge -y mariadb-server mariadb-client
+sudo apt autoremove -y
+sudo rm -rf /var/lib/mysql* /etc/mysql /run/mysqld /srv/mariadb_* /tmp/mariadb.log
+sudo apt update
+sudo apt install -y mariadb-server mariadb-client
 MYSQL_DATA_DIR=/var/lib/mysql
 MYSQL_RUN_DIR=/run/mysqld
 MYSQL_SOCKET="$MYSQL_RUN_DIR/mysqld.sock"
 MAX_PORT=3310
-# Reset main config to defaults to avoid overrides from previous installs
-echo -e "${YELLOW}Resetting MariaDB main config to defaults...${NC}"
-CONFIG_FILE="/etc/mysql/mariadb.conf.d/50-server.cnf"
-if grep -q "^datadir" "$CONFIG_FILE"; then
-  sudo sed -i "s|^datadir\s*=.*|datadir = $MYSQL_DATA_DIR|" "$CONFIG_FILE"
-else
-  echo "datadir = $MYSQL_DATA_DIR" | sudo tee -a "$CONFIG_FILE" > /dev/null
-fi
-if grep -q "^socket" "$CONFIG_FILE"; then
-  sudo sed -i "s|^socket\s*=.*|socket = $MYSQL_SOCKET|" "$CONFIG_FILE"
-else
-  echo "socket = $MYSQL_SOCKET" | sudo tee -a "$CONFIG_FILE" > /dev/null
-fi
-if grep -q "^port" "$CONFIG_FILE"; then
-  sudo sed -i 's|^port\s*=.*|port = 3306|' "$CONFIG_FILE"
-else
-  echo "port = 3306" | sudo tee -a "$CONFIG_FILE" > /dev/null
-fi
 # ensure dirs & ownership
 sudo mkdir -p "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR" /etc/mysql/conf.d
 sudo chown -R mysql:mysql "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR"
@@ -187,6 +177,24 @@ fi
 # Remove service overrides to ensure standard config
 sudo rm -rf /etc/systemd/system/mariadb.service.d/ 2>/dev/null || true
 sudo systemctl daemon-reload 2>/dev/null || true
+# Reset main config to defaults to avoid overrides from previous installs
+echo -e "${YELLOW}Resetting MariaDB main config to defaults...${NC}"
+CONFIG_FILE="/etc/mysql/mariadb.conf.d/50-server.cnf"
+if grep -q "^datadir" "$CONFIG_FILE"; then
+  sudo sed -i "s|^datadir\s*=.*|datadir = $MYSQL_DATA_DIR|" "$CONFIG_FILE"
+else
+  echo "datadir = $MYSQL_DATA_DIR" | sudo tee -a "$CONFIG_FILE" > /dev/null
+fi
+if grep -q "^socket" "$CONFIG_FILE"; then
+  sudo sed -i "s|^socket\s*=.*|socket = $MYSQL_SOCKET|" "$CONFIG_FILE"
+else
+  echo "socket = $MYSQL_SOCKET" | sudo tee -a "$CONFIG_FILE" > /dev/null
+fi
+if grep -q "^port" "$CONFIG_FILE"; then
+  sudo sed -i 's|^port\s*=.*|port = 3306|' "$CONFIG_FILE"
+else
+  echo "port = 3306" | sudo tee -a "$CONFIG_FILE" > /dev/null
+fi
 # Clear any custom conf.d files
 sudo rm -f /etc/mysql/conf.d/*.cnf
 # write minimal UTF8 config for our port & socket
@@ -220,7 +228,6 @@ echo -e "${YELLOW}Cleaning up any stale MariaDB processes and sockets...${NC}"
 sudo systemctl stop mariadb mysql >/dev/null 2>&1 || true
 sudo killall -9 mysqld mariadbd mysqld_safe >/dev/null 2>&1 || true
 sudo rm -f "$MYSQL_SOCKET" /var/lib/mysql/*.pid /var/lib/mysql/*.sock /tmp/mariadb.log >/dev/null 2>&1 || true
-sudo rm -rf /srv/mariadb_* 2>/dev/null || true
 if ! command -v mariadbd >/dev/null 2>&1 && ! command -v mysqld >/dev/null 2>&1; then
   echo -e "${RED}MariaDB server binary not found. Installation may be incomplete.${NC}"
   echo "Try: sudo apt install --reinstall mariadb-server"

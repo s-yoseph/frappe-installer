@@ -88,8 +88,8 @@ fi
 # System Update and Core Package Installation
 # - Runs apt update/upgrade to ensure latest packages.
 # - Installs Ubuntu/WSL essentials: Git/curl/wget for downloads; Python3 + venv/pip/dev for Frappe runtime;
-Redis for background jobs; xvfb/libfontconfig/wkhtmltopdf for PDF generation; MariaDB for database;
-build-essential for compiling; jq for JSON parsing (used later for config).
+#Redis for background jobs; xvfb/libfontconfig/wkhtmltopdf for PDF generation; MariaDB for database;
+#build-essential for compiling; jq for JSON parsing (used later for config).
 # Purpose: Prepares the environment; fails fast if sudo access is denied.
 echo -e "${LIGHT_BLUE}Updating system and installing core packages...${NC}"
 sudo apt update

@@ -114,14 +114,6 @@ yarn -v || true
 # Gotcha: Requires sudo; may need manual stop of other DBs (e.g., sudo systemctl stop mysql).
 ### ===== MariaDB Setup =====
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
-# Purge and reinstall MariaDB for a completely clean slate
-echo -e "${YELLOW}Purging and reinstalling MariaDB for clean configuration...${NC}"
-sudo systemctl stop mariadb mysql >/dev/null 2>&1 || true
-sudo apt purge -y mariadb-server mariadb-client
-sudo apt autoremove -y
-sudo rm -rf /var/lib/mysql* /etc/mysql /run/mysqld /srv/mariadb_* /tmp/mariadb.log
-sudo apt update
-sudo apt install -y mariadb-server mariadb-client
 MYSQL_DATA_DIR=/var/lib/mysql
 MYSQL_RUN_DIR=/run/mysqld
 MYSQL_SOCKET="$MYSQL_RUN_DIR/mysqld.sock"
@@ -130,6 +122,8 @@ MAX_PORT=3310
 sudo mkdir -p "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR" /etc/mysql/conf.d
 sudo chown -R mysql:mysql "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR"
 sudo chmod 750 "$MYSQL_DATA_DIR"
+sudo chmod 755 /etc/mysql/conf.d
+sudo chown root:root /etc/mysql/conf.d
 # Stop any existing MariaDB and start it with the correct socket
 sudo systemctl stop mariadb >/dev/null 2>&1 || true
 sudo rm -f "$MYSQL_SOCKET"
@@ -177,24 +171,6 @@ fi
 # Remove service overrides to ensure standard config
 sudo rm -rf /etc/systemd/system/mariadb.service.d/ 2>/dev/null || true
 sudo systemctl daemon-reload 2>/dev/null || true
-# Reset main config to defaults to avoid overrides from previous installs
-echo -e "${YELLOW}Resetting MariaDB main config to defaults...${NC}"
-CONFIG_FILE="/etc/mysql/mariadb.conf.d/50-server.cnf"
-if grep -q "^datadir" "$CONFIG_FILE"; then
-  sudo sed -i "s|^datadir\s*=.*|datadir = $MYSQL_DATA_DIR|" "$CONFIG_FILE"
-else
-  echo "datadir = $MYSQL_DATA_DIR" | sudo tee -a "$CONFIG_FILE" > /dev/null
-fi
-if grep -q "^socket" "$CONFIG_FILE"; then
-  sudo sed -i "s|^socket\s*=.*|socket = $MYSQL_SOCKET|" "$CONFIG_FILE"
-else
-  echo "socket = $MYSQL_SOCKET" | sudo tee -a "$CONFIG_FILE" > /dev/null
-fi
-if grep -q "^port" "$CONFIG_FILE"; then
-  sudo sed -i 's|^port\s*=.*|port = 3306|' "$CONFIG_FILE"
-else
-  echo "port = 3306" | sudo tee -a "$CONFIG_FILE" > /dev/null
-fi
 # Clear any custom conf.d files
 sudo rm -f /etc/mysql/conf.d/*.cnf
 # write minimal UTF8 config for our port & socket
@@ -402,69 +378,4 @@ TEMP_FIXTURE_DIR="/tmp/${APP}_fixtures_backup"
 echo "Backing up fixture files for $APP..."
 mkdir -p "$TEMP_FIXTURE_DIR"
 mv "$FIXTURE_DIR/leave_policy.json" "$TEMP_FIXTURE_DIR/" 2>/dev/null || true
-mv "$FIXTURE_DIR/other_problematic_fixture.json" "$TEMP_FIXTURE_DIR/" 2>/dev/null || true
-bench --site "$SITE_NAME" install-app "$APP"
-echo "Restoring fixture files for $APP..."
-mv "$TEMP_FIXTURE_DIR"/* "$FIXTURE_DIR/" 2>/dev/null || true
-rmdir "$TEMP_FIXTURE_DIR" 2>/dev/null || true
-# Workaround for mmcy_asset_management Fixtures
-# - Moves account.json and asset_category.json (causing fixed_asset_account MandatoryError) to /tmp.
-# - Installs app without them.
-# - Restores all (including skipped); suggests manual import-fixtures post-setup.
-# Purpose: Bypasses validation errors during install; fixtures applied via migrate/manual command.
-# Gotcha: If asset_category needed immediately, create manually in UI (Asset Category > New > Non-Depreciable).
-# -----------------------------
-# Workaround for mmcy_asset_management problematic fixtures
-# -----------------------------
-APP="mmcy_asset_management"
-FIXTURE_DIR="apps/$APP/$APP/fixtures"
-TEMP_FIXTURE_DIR="/tmp/${APP}_fixtures_backup"
-echo "Temporarily removing problematic fixtures for $APP..."
-mkdir -p "$TEMP_FIXTURE_DIR"
-for f in account.json asset_category.json; do
-    if [ -f "$FIXTURE_DIR/$f" ]; then
-        echo "⏩ Skipping fixture: $f"
-        mv "$FIXTURE_DIR/$f" "$TEMP_FIXTURE_DIR/"
-    fi
-done
-bench --site "$SITE_NAME" install-app "$APP"
-echo "Restoring fixture files..."
-mv "$TEMP_FIXTURE_DIR"/* "$FIXTURE_DIR/" 2>/dev/null || true
-rmdir "$TEMP_FIXTURE_DIR" 2>/dev/null || true
-echo -e "${LIGHT_BLUE}⚠️ Skipped fixtures restored. Run this manually once setup is complete:${NC}"
-echo "bench --site $SITE_NAME import-fixtures"
-# Custom App Installation (mmcy_it_operations)
-# - Straight install without workarounds (assumes no fixture issues).
-# Purpose: Adds IT operations module.
-# -----------------------------
-# Install mmcy_it_operations
-# -----------------------------
-bench --site "$SITE_NAME" install-app mmcy_it_operations
-# Migration for Schema and Fixtures
-# - Runs bench migrate to apply all app updates, schemas, and restored fixtures to the DB.
-# Purpose: Syncs everything post-install; essential for fixtures and patches.
-echo -e "${LIGHT_BLUE}Running migrate...${NC}"
-bench --site "$SITE_NAME" migrate
-# Asset Build
-# - Compiles JS/CSS assets for the front-end.
-# Purpose: Prepares UI; runs once after migrate.
-echo -e "${LIGHT_BLUE}Running build...${NC}"
-bench build
-# Procfile Update for Web Server
-# - Removes old web: lines; appends "web: bench serve --port 8003" for development server.
-# Purpose: Configures bench start to use custom port; overrides defaults.
-echo -e "${LIGHT_BLUE}Setting web port to $SITE_PORT in Procfile...${NC}"
-sed -i '/^web:/d' Procfile || true
-echo "web: bench serve --port $SITE_PORT" >> Procfile
-# Hosts File Update
-# - Checks/adds 127.0.0.1 mmcy.hrms to /etc/hosts if missing.
-# Purpose: Enables http://mmcy.hrms:8003 access without DNS.
-if ! grep -q "^127.0.0.1[[:space:]]\+$SITE_NAME\$" /etc/hosts; then
-  echo "127.0.0.1 $SITE_NAME" | sudo tee -a /etc/hosts >/dev/null
-fi
-# Final Success Message
-# - Prints completion and commands to start/serve the site.
-# Purpose: Guides user to launch (bench start runs all services; serve for web only).
-echo -e "${GREEN}Setup finished!${NC}"
-echo -e " cd $INSTALL_DIR/$BENCH_NAME && bench start"
-echo -e " cd $INSTALL_DIR/$BENCH_NAME && bench --site $SITE_NAME serve --port $SITE_PORT"
+mv "$FIXTURE_DIR/other_problematic_fixture.json" "$TEMP_FIXTURE_DIR/" 2>/

@@ -158,7 +158,7 @@ log_mariadb_status() {
   echo -e "${YELLOW}Checking MariaDB logs...${NC}"
   sudo journalctl -u mariadb -n 30 --no-pager || true
 }
-DB_PORT=3306
+DB_PORT=3307
 echo -e "${YELLOW}Using fixed MariaDB port: $DB_PORT (checking for conflicts)...${NC}"
 # Check for port conflict
 if ss -ltn | grep -q ":$DB_PORT "; then

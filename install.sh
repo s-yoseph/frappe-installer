@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # install.sh - Full corrected Frappe + ERPNext + custom apps installer (Ubuntu / WSL)
-# - Disables Python debugger completely
+# - Automatically continues through Python debugger prompts
+# - Disables all debugger interference
 # - Fetches apps with proper error handling
-# - Uses --no-interactive flag for bench commands
 set -euo pipefail
 
 ### ===== CONFIG =====
@@ -36,7 +36,7 @@ echo "Bench will be installed to: $INSTALL_DIR/$BENCH_NAME"
 echo
 export PATH="$HOME/.local/bin:$PATH"
 
-# <CHANGE> Disable Python debugger completely and aggressively
+# <CHANGE> Disable Python debugger completely
 export PYTHONBREAKPOINT=0
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONUNBUFFERED=1
@@ -199,7 +199,6 @@ python3 -u $(which bench) config set-common-config -c mariadb_root_password "'${
 ### ===== Fetch apps =====
 echo -e "${LIGHT_BLUE}Fetching ERPNext and HRMS apps...${NC}"
 
-# <CHANGE> Fetch apps with explicit error checking and verbose output
 if [ ! -d "apps/erpnext" ]; then
   echo "Fetching ERPNext from GitHub..."
   if ! python3 -u $(which bench) get-app --branch "$ERPNEXT_BRANCH" erpnext https://github.com/frappe/erpnext; then
@@ -233,8 +232,9 @@ python3 -u $(which bench) drop-site "${SITE_NAME}" --no-backup --force \
   --db-root-username root \
   --db-root-password "${MYSQL_ROOT_PASS}" 2>&1 | tail -5 || true
 
-# <CHANGE> Use --no-interactive flag to prevent debugger from being triggered
-python3 -u $(which bench) new-site "${SITE_NAME}" \
+# <CHANGE> Pipe "c" (continue) to automatically continue through debugger prompts
+echo -e "${LIGHT_BLUE}Creating new site (auto-continuing through debugger if needed)...${NC}"
+(echo "c"; sleep 2) | python3 -u $(which bench) new-site "${SITE_NAME}" \
   --db-host "127.0.0.1" \
   --db-port "${DB_PORT}" \
   --db-root-username root \

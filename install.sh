@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # install.sh - Full corrected Frappe + ERPNext + custom apps installer (Ubuntu / WSL)
-# - Disables Python debugger to prevent pdb interference
-# - Fixes app fetching with better error handling
-# - Uses --skip-grant-tables for MariaDB setup
+# - Disables Python debugger completely
+# - Fetches apps with proper error handling
+# - Uses --no-interactive flag for bench commands
 set -euo pipefail
 
 ### ===== CONFIG =====
@@ -36,9 +36,11 @@ echo "Bench will be installed to: $INSTALL_DIR/$BENCH_NAME"
 echo
 export PATH="$HOME/.local/bin:$PATH"
 
-# <CHANGE> Disable Python debugger to prevent pdb interference
+# <CHANGE> Disable Python debugger completely and aggressively
 export PYTHONBREAKPOINT=0
 export PYTHONDONTWRITEBYTECODE=1
+export PYTHONUNBUFFERED=1
+export PYTHONIOENCODING=utf-8
 
 # --- Helpers ---
 die() { echo -e "${RED}ERROR: $*${NC}" >&2; exit 1; }
@@ -185,64 +187,60 @@ mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 if [ ! -d "$BENCH_NAME" ]; then
   echo -e "${LIGHT_BLUE}Initializing bench '${BENCH_NAME}' (frappe branch: ${FRAPPE_BRANCH})...${NC}"
-  bench init "$BENCH_NAME" --frappe-branch "$FRAPPE_BRANCH" --python python3 --verbose || die "bench init failed"
+  python3 -u $(which bench) init "$BENCH_NAME" --frappe-branch "$FRAPPE_BRANCH" --python python3 --verbose || die "bench init failed"
 fi
 cd "$BENCH_NAME"
 
 echo -e "${LIGHT_BLUE}Configuring bench to use MariaDB on custom port...${NC}"
-bench config set-common-config -c db_host "'127.0.0.1'" || true
-bench config set-common-config -c db_port "${DB_PORT}" || true
-bench config set-common-config -c mariadb_root_password "'${MYSQL_ROOT_PASS}'" || true
+python3 -u $(which bench) config set-common-config -c db_host "'127.0.0.1'" || true
+python3 -u $(which bench) config set-common-config -c db_port "${DB_PORT}" || true
+python3 -u $(which bench) config set-common-config -c mariadb_root_password "'${MYSQL_ROOT_PASS}'" || true
 
 ### ===== Fetch apps =====
 echo -e "${LIGHT_BLUE}Fetching ERPNext and HRMS apps...${NC}"
 
-# <CHANGE> Add verbose output and better error handling for app fetching
+# <CHANGE> Fetch apps with explicit error checking and verbose output
 if [ ! -d "apps/erpnext" ]; then
   echo "Fetching ERPNext from GitHub..."
-  bench get-app --branch "$ERPNEXT_BRANCH" erpnext https://github.com/frappe/erpnext 2>&1 | tail -20 || {
-    echo -e "${YELLOW}ERPNext fetch failed, continuing...${NC}"
-  }
+  if ! python3 -u $(which bench) get-app --branch "$ERPNEXT_BRANCH" erpnext https://github.com/frappe/erpnext; then
+    echo -e "${RED}Failed to fetch ERPNext${NC}"
+    die "ERPNext is required for Frappe to work"
+  fi
 fi
 
 if [ ! -d "apps/hrms" ]; then
   echo "Fetching HRMS from GitHub..."
-  bench get-app --branch "$HRMS_BRANCH" hrms https://github.com/frappe/hrms 2>&1 | tail -20 || {
-    echo -e "${YELLOW}HRMS fetch failed, continuing...${NC}"
-  }
+  if ! python3 -u $(which bench) get-app --branch "$HRMS_BRANCH" hrms https://github.com/frappe/hrms; then
+    echo -e "${RED}Failed to fetch HRMS${NC}"
+    die "HRMS is required for Frappe to work"
+  fi
 fi
+
+echo -e "${GREEN}Core apps fetched successfully.${NC}"
 
 # Custom apps (optional)
 if [ "${USE_LOCAL_APPS}" = "false" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
   export GIT_TRACE=0
-  [ ! -d "apps/mmcy_hrms" ] && bench get-app --branch "$CUSTOM_BRANCH" mmcy_hrms "$CUSTOM_HR_REPO" 2>&1 | tail -10 || echo -e "${YELLOW}Custom HRMS fetch skipped${NC}"
-  [ ! -d "apps/mmcy_asset_management" ] && bench get-app --branch "$CUSTOM_BRANCH" mmcy_asset_management "$CUSTOM_ASSET_REPO" 2>&1 | tail -10 || echo -e "${YELLOW}Custom Asset fetch skipped${NC}"
-  [ ! -d "apps/mmcy_it_operations" ] && bench get-app --branch "$CUSTOM_BRANCH" mmcy_it_operations "$CUSTOM_IT_REPO" 2>&1 | tail -10 || echo -e "${YELLOW}Custom IT fetch skipped${NC}"
+  [ ! -d "apps/mmcy_hrms" ] && python3 -u $(which bench) get-app --branch "$CUSTOM_BRANCH" mmcy_hrms "$CUSTOM_HR_REPO" || echo -e "${YELLOW}Custom HRMS fetch skipped${NC}"
+  [ ! -d "apps/mmcy_asset_management" ] && python3 -u $(which bench) get-app --branch "$CUSTOM_BRANCH" mmcy_asset_management "$CUSTOM_ASSET_REPO" || echo -e "${YELLOW}Custom Asset fetch skipped${NC}"
+  [ ! -d "apps/mmcy_it_operations" ] && python3 -u $(which bench) get-app --branch "$CUSTOM_BRANCH" mmcy_it_operations "$CUSTOM_IT_REPO" || echo -e "${YELLOW}Custom IT fetch skipped${NC}"
   unset GIT_TRACE
-fi
-
-# <CHANGE> Verify ERPNext and HRMS exist before proceeding
-if [ ! -d "apps/erpnext" ] || [ ! -d "apps/hrms" ]; then
-  echo -e "${RED}Warning: ERPNext or HRMS not found. These are required for Frappe to work properly.${NC}"
-  echo "Attempting to fetch them again..."
-  bench get-app --branch "$ERPNEXT_BRANCH" erpnext https://github.com/frappe/erpnext || die "Failed to fetch ERPNext"
-  bench get-app --branch "$HRMS_BRANCH" hrms https://github.com/frappe/hrms || die "Failed to fetch HRMS"
 fi
 
 ### ===== Create site =====
 echo -e "${LIGHT_BLUE}Creating site '${SITE_NAME}'...${NC}"
-bench drop-site "${SITE_NAME}" --no-backup --force \
+python3 -u $(which bench) drop-site "${SITE_NAME}" --no-backup --force \
   --db-root-username root \
   --db-root-password "${MYSQL_ROOT_PASS}" 2>&1 | tail -5 || true
 
-# <CHANGE> Add verbose output to see what's happening during site creation
-bench new-site "${SITE_NAME}" \
+# <CHANGE> Use --no-interactive flag to prevent debugger from being triggered
+python3 -u $(which bench) new-site "${SITE_NAME}" \
   --db-host "127.0.0.1" \
   --db-port "${DB_PORT}" \
   --db-root-username root \
   --db-root-password "${MYSQL_ROOT_PASS}" \
   --admin-password "${ADMIN_PASS}" \
-  --verbose 2>&1 | tail -50 || {
+  --no-interactive || {
     echo -e "${RED}Failed to create site. Full debug info:${NC}"
     sudo journalctl -u mariadb -n 100 --no-pager || true
     tail -n 100 logs/* 2>/dev/null || true
@@ -270,17 +268,17 @@ fi
 
 ### ===== Install apps into site =====
 echo -e "${LIGHT_BLUE}Installing apps into ${SITE_NAME}...${NC}"
-bench --site "${SITE_NAME}" install-app erpnext 2>&1 | tail -20 || echo -e "${YELLOW}ERPNext install skipped/warn${NC}"
-bench --site "${SITE_NAME}" install-app hrms 2>&1 | tail -20 || echo -e "${YELLOW}HRMS install skipped/warn${NC}"
+python3 -u $(which bench) --site "${SITE_NAME}" install-app erpnext || echo -e "${YELLOW}ERPNext install skipped/warn${NC}"
+python3 -u $(which bench) --site "${SITE_NAME}" install-app hrms || echo -e "${YELLOW}HRMS install skipped/warn${NC}"
 
 if [ -d "apps/mmcy_hrms" ]; then
-  bench --site "${SITE_NAME}" install-app mmcy_hrms 2>&1 | tail -10 || echo -e "${YELLOW}Custom HRMS install skipped/warn${NC}"
+  python3 -u $(which bench) --site "${SITE_NAME}" install-app mmcy_hrms || echo -e "${YELLOW}Custom HRMS install skipped/warn${NC}"
 fi
 if [ -d "apps/mmcy_asset_management" ]; then
-  bench --site "${SITE_NAME}" install-app mmcy_asset_management 2>&1 | tail -10 || echo -e "${YELLOW}Custom Asset install skipped/warn${NC}"
+  python3 -u $(which bench) --site "${SITE_NAME}" install-app mmcy_asset_management || echo -e "${YELLOW}Custom Asset install skipped/warn${NC}"
 fi
 if [ -d "apps/mmcy_it_operations" ]; then
-  bench --site "${SITE_NAME}" install-app mmcy_it_operations 2>&1 | tail -10 || echo -e "${YELLOW}Custom IT install skipped/warn${NC}"
+  python3 -u $(which bench) --site "${SITE_NAME}" install-app mmcy_it_operations || echo -e "${YELLOW}Custom IT install skipped/warn${NC}"
 fi
 
 echo -e "${GREEN}Frappe setup completed!${NC}"

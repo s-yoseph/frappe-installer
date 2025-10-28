@@ -83,7 +83,7 @@ node -v && npm -v || true
 sudo npm install -g yarn
 yarn -v || true
 
-### ===== MariaDB Setup (FULLY FIXED) =====
+### ===== MariaDB Setup =====
 echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 MYSQL_DATA_DIR=/var/lib/mysql
 MYSQL_RUN_DIR=/run/mysqld
@@ -221,10 +221,10 @@ fi
 cd "$BENCH_NAME"
 
 echo -e "${LIGHT_BLUE}Configuring bench for custom MariaDB port...${NC}"
-bench config set-common-config -c db_host "127.0.0.1" || true
-bench config set-common-config -c db_port "$DB_PORT" || true
+bench config set-common-config -c db_host "'127.0.0.1'" || true
+bench config set-common-config -c db_port $DB_PORT || true
 
-# Fetching Core Apps (ERPNext, HRMS)
+# Fetching Core Apps
 echo -e "${LIGHT_BLUE}Fetching ERPNext and HRMS apps...${NC}"
 [ ! -d "apps/erpnext" ] && bench get-app --branch "$ERPNEXT_BRANCH" erpnext https://github.com/frappe/erpnext || echo -e "${RED}Failed to fetch ERPNext${NC}"
 [ ! -d "apps/hrms" ] && bench get-app --branch "$HRMS_BRANCH" hrms https://github.com/frappe/hrms || echo -e "${RED}Failed to fetch HRMS${NC}"

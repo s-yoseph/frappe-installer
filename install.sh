@@ -72,7 +72,7 @@ if ! command -v bench >/dev/null 2>&1; then
   python3 -m pip install --user frappe-bench
 fi
 
-# <CHANGE> Remove old bench directory completely to start fresh
+# Remove old bench directory completely
 echo -e "${BLUE}Cleaning up old installation...${NC}"
 if [ -d "$INSTALL_DIR/$BENCH_NAME" ]; then
   rm -rf "$INSTALL_DIR/$BENCH_NAME"
@@ -87,6 +87,14 @@ echo -e "${BLUE}Initializing fresh bench...${NC}"
 bench init "$BENCH_NAME" --frappe-branch "$FRAPPE_BRANCH" --python python3
 
 cd "$BENCH_NAME"
+
+# <CHANGE> Create clean apps.txt with only the apps we need
+echo -e "${BLUE}Creating clean apps configuration...${NC}"
+cat > apps.txt <<EOF
+frappe
+erpnext
+hrms
+EOF
 
 # Configure
 bench config set-common-config -c db_host "'127.0.0.1'" || true

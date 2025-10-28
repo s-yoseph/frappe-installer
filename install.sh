@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # install.sh - Full corrected Frappe + ERPNext + custom apps installer (Ubuntu / WSL)
-# - Fixes MariaDB root auth (unix_socket -> password)
-# - Uses unix_socket first to set password, then TCP
-# - Handles bench set-common-config quoting issue
-# - Ensures logs/sockets exist and MariaDB runs on custom port
+# - Fixes MariaDB startup by using --skip-grant-tables during initial setup
+# - Handles debian-start script issues
+# - Fixes bench set-common-config quoting issue
 set -euo pipefail
 
 ### ===== CONFIG =====
@@ -16,7 +15,7 @@ INSTALL_DIR="${HOME}/frappe-setup"
 SITE_NAME="mmcy.hrms"
 SITE_PORT="8003"
 DB_PORT=3307
-MYSQL_ROOT_PASS="root"          # change if you want another root password
+MYSQL_ROOT_PASS="root"
 MYSQL_USER="frappe"
 MYSQL_PASS="frappe"
 ADMIN_PASS="admin"
@@ -52,7 +51,6 @@ if [ "${USE_LOCAL_APPS}" = "false" ]; then
     CUSTOM_ASSET_REPO="https://${GITHUB_USER}:${GITHUB_TOKEN}@${CUSTOM_ASSET_REPO_BASE}"
     CUSTOM_IT_REPO="https://${GITHUB_USER}:${GITHUB_TOKEN}@${CUSTOM_IT_REPO_BASE}"
   else
-    # Public fallback (no token)
     CUSTOM_HR_REPO="https://${CUSTOM_HR_REPO_BASE}"
     CUSTOM_ASSET_REPO="https://${CUSTOM_ASSET_REPO_BASE}"
     CUSTOM_IT_REPO="https://${CUSTOM_IT_REPO_BASE}"
@@ -66,7 +64,6 @@ sudo apt install -y python3-dev python3.12-venv python3-pip redis-server \
   software-properties-common mariadb-server mariadb-client xvfb libfontconfig wkhtmltopdf \
   curl git build-essential nodejs jq
 
-# make sure npm global binaries are usable
 sudo npm install -g yarn || true
 
 ### ===== MariaDB setup (custom port + root password) =====
@@ -77,13 +74,13 @@ MYSQL_RUN_DIR=/run/mysqld
 MYSQL_SOCKET="/run/mysqld/mysqld.sock"
 LOG_DIR=/var/log/mysql
 
-# Ensure log dir and files exist to avoid mariadb startup errors
+# Ensure log dir and files exist
 sudo mkdir -p "$LOG_DIR" "$MYSQL_RUN_DIR"
 sudo touch "$LOG_DIR/error.log" "$LOG_DIR/slow.log" || true
 sudo chown -R mysql:mysql "$LOG_DIR" "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR" || true
 sudo chmod 750 "$MYSQL_DATA_DIR" || true
 
-# Ensure mysql is stopped so we can set custom port cleanly
+# Stop MariaDB
 sudo systemctl stop mariadb || true
 sleep 1
 
@@ -106,8 +103,10 @@ slow_query_log = 1
 slow_query_log_file = ${LOG_DIR}/slow.log
 EOF
 
-# Start MariaDB
+# <CHANGE> Start MariaDB with --skip-grant-tables to bypass debian-start checks
+echo -e "${LIGHT_BLUE}Starting MariaDB with --skip-grant-tables for initial setup...${NC}"
 sudo systemctl daemon-reload
+sudo systemctl set-environment MYSQLD_OPTS="--skip-grant-tables"
 sudo systemctl enable mariadb >/dev/null 2>&1 || true
 sudo systemctl start mariadb
 sleep 3
@@ -117,8 +116,8 @@ echo "Waiting for MariaDB to start on port ${DB_PORT}..."
 TIMEOUT=60
 ELAPSED=0
 while [ $ELAPSED -lt $TIMEOUT ]; do
-  # <CHANGE> Try unix_socket first (no password needed initially)
-  if sudo mysql -u root -e "SELECT 1;" >/dev/null 2>&1; then
+  # <CHANGE> Connect without password since we're using --skip-grant-tables
+  if mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -e "SELECT 1;" >/dev/null 2>&1; then
     echo -e "${GREEN}MariaDB is ready ✓${NC}"
     break
   fi
@@ -137,20 +136,25 @@ fi
 
 echo -e "${LIGHT_BLUE}Configuring MariaDB root user...${NC}"
 
-# <CHANGE> Connect via unix_socket (no password) to set the password
-echo "Setting root password via unix_socket..."
-sudo mysql -u root <<SQL
+# <CHANGE> Set root password while using --skip-grant-tables
+mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root <<SQL
+FLUSH PRIVILEGES;
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
+ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
 FLUSH PRIVILEGES;
 SQL
 
 echo -e "${GREEN}Root password set.${NC}"
 
-# Restart MariaDB to ensure all changes take effect
-sudo systemctl restart mariadb
+# <CHANGE> Stop MariaDB and restart without --skip-grant-tables
+echo -e "${LIGHT_BLUE}Restarting MariaDB with normal authentication...${NC}"
+sudo systemctl stop mariadb
+sleep 2
+sudo systemctl unset-environment MYSQLD_OPTS
+sudo systemctl start mariadb
 sleep 3
 
-# <CHANGE> Test connection with password on TCP
+# Test connection with password on TCP
 echo -e "${LIGHT_BLUE}Testing MariaDB root login on port ${DB_PORT}...${NC}"
 if ! mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT VERSION();" >/dev/null 2>&1; then
     die "Cannot login to MariaDB root user with password. Check logs."
@@ -172,17 +176,14 @@ echo -e "${GREEN}MariaDB user configured.${NC}"
 
 ### ===== Bench CLI install =====
 echo -e "${LIGHT_BLUE}Installing bench CLI (pipx/pip) and ensuring bench in PATH...${NC}"
-# Prefer pipx but fall back to pip if not present
 if ! command -v pipx >/dev/null 2>&1; then
   sudo apt install -y pipx || true
   python3 -m pip install --user pipx || true
   python3 -m pipx ensurepath || true
 fi
 
-# Ensure pipx path in $PATH
 export PATH="$HOME/.local/bin:$PATH"
 
-# Use pip install --user if bench/pipx problems
 if ! command -v bench >/dev/null 2>&1; then
   pipx install frappe-bench --force || python3 -m pip install --user frappe-bench
 fi
@@ -196,13 +197,10 @@ if [ ! -d "$BENCH_NAME" ]; then
 fi
 cd "$BENCH_NAME"
 
-# Fix benches' db_host quoting issue (the original bug)
+# Fix benches' db_host quoting issue
 echo -e "${LIGHT_BLUE}Configuring bench to use MariaDB on custom port...${NC}"
-# Quote host value so bench's ast.literal_eval treats it as a string
 bench config set-common-config -c db_host "'127.0.0.1'" || true
 bench config set-common-config -c db_port "${DB_PORT}" || true
-
-# Some bench versions need mariadb_root_password key to create/destroy sites; set it quoted
 bench config set-common-config -c mariadb_root_password "'${MYSQL_ROOT_PASS}'" || true
 
 ### ===== Fetch apps =====
@@ -210,7 +208,7 @@ echo -e "${LIGHT_BLUE}Fetching ERPNext and HRMS apps...${NC}"
 [ ! -d "apps/erpnext" ] && bench get-app --branch "$ERPNEXT_BRANCH" erpnext https://github.com/frappe/erpnext || echo -e "${YELLOW}ERPNext fetch skipped or failed${NC}"
 [ ! -d "apps/hrms" ] && bench get-app --branch "$HRMS_BRANCH" hrms https://github.com/frappe/hrms || echo -e "${YELLOW}HRMS fetch skipped or failed${NC}"
 
-# Custom apps (use token if provided)
+# Custom apps
 if [ "${USE_LOCAL_APPS}" = "false" ]; then
   export GIT_TRACE=0
   [ ! -d "apps/mmcy_hrms" ] && bench get-app --branch "$CUSTOM_BRANCH" mmcy_hrms "$CUSTOM_HR_REPO" || echo -e "${YELLOW}Custom HRMS fetch skipped${NC}"
@@ -221,12 +219,10 @@ fi
 
 ### ===== Create site =====
 echo -e "${LIGHT_BLUE}Creating site '${SITE_NAME}'...${NC}"
-# Drop if exists (no backup) to make reruns idempotent
 bench drop-site "${SITE_NAME}" --no-backup --force \
   --db-root-username root \
   --db-root-password "${MYSQL_ROOT_PASS}" || true
 
-# Use bench new-site with TCP host/port
 bench new-site "${SITE_NAME}" \
   --db-host "127.0.0.1" \
   --db-port "${DB_PORT}" \
@@ -239,7 +235,7 @@ bench new-site "${SITE_NAME}" \
     die "bench new-site failed"
   }
 
-# Fix DB user ownership (bench creates site DB user; ensure privileges)
+# Fix DB user ownership
 SITE_CONF="sites/${SITE_NAME}/site_config.json"
 if [ -f "$SITE_CONF" ]; then
   DB_NAME=$(jq -r '.db_name' "$SITE_CONF")

@@ -110,26 +110,38 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable mariadb >/dev/null 2>&1 || true
 sudo systemctl start mariadb
+sleep 2
 
-### ===== MariaDB setup =====
-sudo systemctl stop mariadb || true
-sudo systemctl start mariadb
-
-# Wait for MariaDB via socket first (default)
-echo "Waiting for MariaDB to start..."
-until sudo mariadb -e "SELECT 1;" >/dev/null 2>&1; do
-    sleep 2
+### ===== Wait for MariaDB with timeout (FIXED) =====
+echo "Waiting for MariaDB to start on port ${DB_PORT}..."
+TIMEOUT=60
+ELAPSED=0
+while [ $ELAPSED -lt $TIMEOUT ]; do
+  if mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -e "SELECT 1;" >/dev/null 2>&1; then
+    echo -e "${GREEN}MariaDB is ready ✓${NC}"
+    break
+  fi
+  echo "Still waiting... ($ELAPSED/$TIMEOUT seconds)"
+  sleep 3
+  ELAPSED=$((ELAPSED + 3))
 done
-echo "MariaDB is ready ✓"
+
+if [ $ELAPSED -ge $TIMEOUT ]; then
+  echo -e "${RED}MariaDB failed to start within ${TIMEOUT} seconds${NC}"
+  echo "Debug info:"
+  sudo journalctl -u mariadb -n 50 --no-pager || true
+  sudo tail -n 50 "$LOG_DIR/error.log" || true
+  die "MariaDB startup timeout"
+fi
 
 echo -e "${LIGHT_BLUE}Configuring MariaDB root user...${NC}"
 
 # Check current root auth plugin
-current_plugin=$(sudo mariadb -sNe "SELECT plugin FROM mysql.user WHERE user='root' AND host='localhost';")
+current_plugin=$(mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -sNe "SELECT plugin FROM mysql.user WHERE user='root' AND host='localhost';" 2>/dev/null || echo "")
 
 if [ "$current_plugin" != "mysql_native_password" ]; then
   echo "Root user uses $current_plugin plugin, switching to mysql_native_password..."
-  sudo mariadb <<SQL
+  mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root <<SQL
 ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('${MYSQL_ROOT_PASS}');
 FLUSH PRIVILEGES;
 SQL
@@ -147,11 +159,11 @@ echo -e "${GREEN}MariaDB root password set and verified.${NC}"
 
 # Restart MariaDB to ensure port changes are applied
 sudo systemctl restart mariadb
-sleep 2
+sleep 3
 
-# Test TCP connection on custom port
+# Test TCP connection on custom port again
 if ! mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT VERSION();" >/dev/null 2>&1; then
-    die "MariaDB root login failed. Check logs."
+    die "MariaDB root login failed after restart. Check logs."
 fi
 
 echo -e "${GREEN}MariaDB root password set and tested.${NC}"

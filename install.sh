@@ -72,10 +72,10 @@ if ! command -v bench >/dev/null 2>&1; then
   python3 -m pip install --user frappe-bench
 fi
 
-# Remove old bench directory completely
+# <CHANGE> Use sudo to remove old bench directory (fixes permission issues)
 echo -e "${BLUE}Cleaning up old installation...${NC}"
 if [ -d "$INSTALL_DIR/$BENCH_NAME" ]; then
-  rm -rf "$INSTALL_DIR/$BENCH_NAME"
+  sudo rm -rf "$INSTALL_DIR/$BENCH_NAME"
   echo -e "${GREEN}Old bench removed${NC}"
 fi
 
@@ -88,7 +88,7 @@ bench init "$BENCH_NAME" --frappe-branch "$FRAPPE_BRANCH" --python python3
 
 cd "$BENCH_NAME"
 
-# <CHANGE> Create clean apps.txt with only the apps we need
+# Create clean apps.txt with only the apps we need
 echo -e "${BLUE}Creating clean apps configuration...${NC}"
 cat > apps.txt <<EOF
 frappe

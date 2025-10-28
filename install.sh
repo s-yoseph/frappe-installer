@@ -60,11 +60,11 @@ if [ "${USE_LOCAL_APPS}" = "false" ]; then
 fi
 
 ### ===== Install system packages =====
-echo -e "${LIGHT_BLUE}Installing system packages...${NC}"
-sudo apt update
-sudo apt install -y git curl wget python3 python3-venv python3-dev python3-pip \
-  redis-server xvfb libfontconfig wkhtmltopdf build-essential jq \
-  mariadb-server mariadb-client nodejs npm
+echo -e "${LIGHT_BLUE}Installing dependencies...${NC}"
+sudo apt update -y
+sudo apt install -y python3-dev python3.12-venv python3-pip redis-server \
+  software-properties-common mariadb-server mariadb-client xvfb libfontconfig wkhtmltopdf \
+  curl git build-essential nodejs jq
 
 # make sure npm global binaries are usable
 sudo npm install -g yarn || true

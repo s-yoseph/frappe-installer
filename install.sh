@@ -127,24 +127,21 @@ for i in {1..60}; do
   fi
 done
 
-# Ensure root can be accessed by password: change auth from unix_socket -> mysql_native_password / set root password
-echo -e "${LIGHT_BLUE}Configuring MariaDB root user (set password and auth plugin)...${NC}"
-
-# Wait for MariaDB to start
-echo "Waiting for MariaDB to become ready..."
+echo "Waiting for MariaDB to start..."
 until sudo mariadb -e "SELECT 1;" >/dev/null 2>&1; do
     sleep 2
 done
 echo "MariaDB is ready ✓"
 
 # Set root password and authentication plugin
-MYSQL_ROOT_PASSWORD="your_root_password_here"
+MYSQL_ROOT_PASSWORD="YourRootPasswordHere"
 echo "Configuring MariaDB root user..."
 sudo mariadb <<EOF
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
 FLUSH PRIVILEGES;
 EOF
 echo "MariaDB root user configured ✓"
+
 
 # Use sudo mariadb (shell as root) to run ALTER USER safely
 sudo mariadb <<SQL || die "Failed to run mariaDB commands to set root password"

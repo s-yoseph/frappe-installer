@@ -24,7 +24,7 @@ NC='\033[0m'
 
 die() { echo -e "${RED}ERROR: $*${NC}" >&2; exit 1; }
 
-echo -e "${BLUE}Installing Frappe...${NC}"
+echo -e "${BLUE}Installing Frappe (Fresh Start)...${NC}"
 
 # Install dependencies
 sudo apt update -y
@@ -72,13 +72,19 @@ if ! command -v bench >/dev/null 2>&1; then
   python3 -m pip install --user frappe-bench
 fi
 
-# Initialize bench
+# <CHANGE> Remove old bench directory completely to start fresh
+echo -e "${BLUE}Cleaning up old installation...${NC}"
+if [ -d "$INSTALL_DIR/$BENCH_NAME" ]; then
+  rm -rf "$INSTALL_DIR/$BENCH_NAME"
+  echo -e "${GREEN}Old bench removed${NC}"
+fi
+
+# Initialize bench fresh
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-if [ ! -d "$BENCH_NAME" ]; then
-  bench init "$BENCH_NAME" --frappe-branch "$FRAPPE_BRANCH" --python python3
-fi
+echo -e "${BLUE}Initializing fresh bench...${NC}"
+bench init "$BENCH_NAME" --frappe-branch "$FRAPPE_BRANCH" --python python3
 
 cd "$BENCH_NAME"
 
@@ -87,30 +93,17 @@ bench config set-common-config -c db_host "'127.0.0.1'" || true
 bench config set-common-config -c db_port "${DB_PORT}" || true
 bench config set-common-config -c mariadb_root_password "'${MYSQL_ROOT_PASS}'" || true
 
-# <CHANGE> Remove any leftover custom app references from apps.txt
-echo -e "${BLUE}Cleaning up app configuration...${NC}"
-if [ -f "apps.txt" ]; then
-  grep -v "custom_hrms\|custom-hrms\|mmcy" apps.txt > apps.txt.tmp || true
-  mv apps.txt.tmp apps.txt
-fi
-
-# Get apps
+# Get apps - only frappe, erpnext, and hrms
 echo -e "${BLUE}Fetching apps...${NC}"
 
 if [ ! -d "apps/erpnext" ]; then
   echo "Fetching ERPNext..."
-  if ! bench get-app --branch "$ERPNEXT_BRANCH" erpnext https://github.com/frappe/erpnext.git 2>&1; then
-    echo -e "${YELLOW}bench get-app failed, trying direct git clone...${NC}"
-    git clone --branch "$ERPNEXT_BRANCH" https://github.com/frappe/erpnext.git apps/erpnext || die "Failed to fetch ERPNext"
-  fi
+  git clone --branch "$ERPNEXT_BRANCH" https://github.com/frappe/erpnext.git apps/erpnext || die "Failed to fetch ERPNext"
 fi
 
 if [ ! -d "apps/hrms" ]; then
   echo "Fetching HRMS..."
-  if ! bench get-app --branch "$HRMS_BRANCH" hrms https://github.com/frappe/hrms.git 2>&1; then
-    echo -e "${YELLOW}bench get-app failed, trying direct git clone...${NC}"
-    git clone --branch "$HRMS_BRANCH" https://github.com/frappe/hrms.git apps/hrms || die "Failed to fetch HRMS"
-  fi
+  git clone --branch "$HRMS_BRANCH" https://github.com/frappe/hrms.git apps/hrms || die "Failed to fetch HRMS"
 fi
 
 echo -e "${GREEN}All apps fetched${NC}"
@@ -126,6 +119,8 @@ bench drop-site "$SITE_NAME" --no-backup --force --db-root-username root --db-ro
   --db-root-password "${MYSQL_ROOT_PASS}" \
   --admin-password "${ADMIN_PASS}" \
   --no-interactive || die "Failed to create site"
+
+echo -e "${GREEN}Site created${NC}"
 
 # Install apps
 echo -e "${BLUE}Installing apps...${NC}"

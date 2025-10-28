@@ -122,11 +122,28 @@ until sudo mariadb -e "SELECT 1;" >/dev/null 2>&1; do
 done
 echo "MariaDB is ready ✓"
 
-# Set root password properly (force mysql_native_password)
-sudo mariadb <<EOF
+echo -e "${LIGHT_BLUE}Configuring MariaDB root user...${NC}"
+
+# Check current root auth plugin
+current_plugin=$(sudo mariadb -sNe "SELECT plugin FROM mysql.user WHERE user='root' AND host='localhost';")
+
+if [ "$current_plugin" != "mysql_native_password" ]; then
+  echo "Root user uses $current_plugin plugin, switching to mysql_native_password..."
+  sudo mariadb <<SQL
 ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('${MYSQL_ROOT_PASS}');
 FLUSH PRIVILEGES;
-EOF
+SQL
+else
+  echo "Root user already uses mysql_native_password, skipping change."
+fi
+
+# Test connection with password on TCP
+echo -e "${LIGHT_BLUE}Testing MariaDB root login on port ${DB_PORT}...${NC}"
+if ! mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT VERSION();" >/dev/null 2>&1; then
+    die "Cannot login to MariaDB root user. Check logs."
+fi
+
+echo -e "${GREEN}MariaDB root password set and verified.${NC}"
 
 # Restart MariaDB to ensure port changes are applied
 sudo systemctl restart mariadb

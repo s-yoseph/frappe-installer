@@ -87,46 +87,31 @@ bench config set-common-config -c db_host "'127.0.0.1'" || true
 bench config set-common-config -c db_port "${DB_PORT}" || true
 bench config set-common-config -c mariadb_root_password "'${MYSQL_ROOT_PASS}'" || true
 
-# <CHANGE> Get apps with retry logic and direct git clone fallback
+# <CHANGE> Remove any leftover custom app references from apps.txt
+echo -e "${BLUE}Cleaning up app configuration...${NC}"
+if [ -f "apps.txt" ]; then
+  grep -v "custom_hrms\|custom-hrms\|mmcy" apps.txt > apps.txt.tmp || true
+  mv apps.txt.tmp apps.txt
+fi
+
+# Get apps
 echo -e "${BLUE}Fetching apps...${NC}"
 
-# Function to fetch app with retry
-fetch_app() {
-  local app_name=$1
-  local app_path=$2
-  local git_url=$3
-  local branch=$4
-  
-  if [ -d "apps/$app_name" ]; then
-    echo -e "${GREEN}$app_name already exists${NC}"
-    return 0
+if [ ! -d "apps/erpnext" ]; then
+  echo "Fetching ERPNext..."
+  if ! bench get-app --branch "$ERPNEXT_BRANCH" erpnext https://github.com/frappe/erpnext.git 2>&1; then
+    echo -e "${YELLOW}bench get-app failed, trying direct git clone...${NC}"
+    git clone --branch "$ERPNEXT_BRANCH" https://github.com/frappe/erpnext.git apps/erpnext || die "Failed to fetch ERPNext"
   fi
-  
-  echo "Fetching $app_name..."
-  
-  # Try bench get-app first
-  if bench get-app --branch "$branch" "$app_name" "$git_url" 2>&1; then
-    echo -e "${GREEN}$app_name fetched successfully${NC}"
-    return 0
-  fi
-  
-  # If bench get-app fails, try direct git clone
-  echo -e "${YELLOW}bench get-app failed, trying direct git clone...${NC}"
-  if git clone --branch "$branch" "$git_url" "apps/$app_name" 2>&1; then
-    echo -e "${GREEN}$app_name cloned successfully${NC}"
-    return 0
-  fi
-  
-  # If both fail, return error
-  echo -e "${RED}Failed to fetch $app_name${NC}"
-  return 1
-}
+fi
 
-# Fetch ERPNext
-fetch_app "erpnext" "apps/erpnext" "https://github.com/frappe/erpnext.git" "$ERPNEXT_BRANCH" || die "Failed to fetch ERPNext"
-
-# Fetch HRMS
-fetch_app "hrms" "apps/hrms" "https://github.com/frappe/hrms.git" "$HRMS_BRANCH" || die "Failed to fetch HRMS"
+if [ ! -d "apps/hrms" ]; then
+  echo "Fetching HRMS..."
+  if ! bench get-app --branch "$HRMS_BRANCH" hrms https://github.com/frappe/hrms.git 2>&1; then
+    echo -e "${YELLOW}bench get-app failed, trying direct git clone...${NC}"
+    git clone --branch "$HRMS_BRANCH" https://github.com/frappe/hrms.git apps/hrms || die "Failed to fetch HRMS"
+  fi
+fi
 
 echo -e "${GREEN}All apps fetched${NC}"
 

@@ -2,7 +2,7 @@
 # install.sh - Simple Frappe + ERPNext + HRMS installer (Ubuntu / WSL)
 # - No custom apps complexity
 # - Just core Frappe, ERPNext, and HRMS
-# - Simple and reliable
+# - Includes database migration to create tables
 set -euo pipefail
 
 ### ===== CONFIG =====
@@ -186,6 +186,12 @@ python3 -u $(which bench) --site "${SITE_NAME}" install-app erpnext || die "Fail
 python3 -u $(which bench) --site "${SITE_NAME}" install-app hrms || die "Failed to install HRMS"
 
 echo -e "${GREEN}Apps installed ✓${NC}"
+
+# <CHANGE> Add database migration to create all tables
+echo -e "${LIGHT_BLUE}Migrating database (creating tables)...${NC}"
+python3 -u $(which bench) --site "${SITE_NAME}" migrate || die "Failed to migrate database"
+
+echo -e "${GREEN}Database migrated ✓${NC}"
 
 ### ===== Done =====
 echo -e "${GREEN}✓ Frappe setup completed!${NC}"

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # install.sh - Full corrected Frappe + ERPNext + custom apps installer (Ubuntu / WSL)
-# - Fixes MariaDB startup by using --skip-grant-tables during initial setup
-# - Handles debian-start script issues
-# - Fixes bench set-common-config quoting issue
+# - Disables Python debugger to prevent pdb interference
+# - Fixes app fetching with better error handling
+# - Uses --skip-grant-tables for MariaDB setup
 set -euo pipefail
 
 ### ===== CONFIG =====
@@ -35,6 +35,10 @@ echo -e "${LIGHT_BLUE}Starting full corrected install.sh...${NC}"
 echo "Bench will be installed to: $INSTALL_DIR/$BENCH_NAME"
 echo
 export PATH="$HOME/.local/bin:$PATH"
+
+# <CHANGE> Disable Python debugger to prevent pdb interference
+export PYTHONBREAKPOINT=0
+export PYTHONDONTWRITEBYTECODE=1
 
 # --- Helpers ---
 die() { echo -e "${RED}ERROR: $*${NC}" >&2; exit 1; }
@@ -74,22 +78,18 @@ MYSQL_RUN_DIR=/run/mysqld
 MYSQL_SOCKET="/run/mysqld/mysqld.sock"
 LOG_DIR=/var/log/mysql
 
-# Ensure log dir and files exist
 sudo mkdir -p "$LOG_DIR" "$MYSQL_RUN_DIR"
 sudo touch "$LOG_DIR/error.log" "$LOG_DIR/slow.log" || true
 sudo chown -R mysql:mysql "$LOG_DIR" "$MYSQL_RUN_DIR" "$MYSQL_DATA_DIR" || true
 sudo chmod 750 "$MYSQL_DATA_DIR" || true
 
-# Stop MariaDB
 sudo systemctl stop mariadb || true
 sleep 1
 
-# Backup server conf if present
 if [ -f /etc/mysql/mariadb.conf.d/50-server.cnf ]; then
   sudo cp /etc/mysql/mariadb.conf.d/50-server.cnf /etc/mysql/mariadb.conf.d/50-server.cnf.bak || true
 fi
 
-# Write custom conf to ensure port + socket
 sudo tee /etc/mysql/mariadb.conf.d/99-custom-erpnext.cnf > /dev/null <<EOF
 [mysqld]
 port = ${DB_PORT}
@@ -103,7 +103,6 @@ slow_query_log = 1
 slow_query_log_file = ${LOG_DIR}/slow.log
 EOF
 
-# <CHANGE> Start MariaDB with --skip-grant-tables to bypass debian-start checks
 echo -e "${LIGHT_BLUE}Starting MariaDB with --skip-grant-tables for initial setup...${NC}"
 sudo systemctl daemon-reload
 sudo systemctl set-environment MYSQLD_OPTS="--skip-grant-tables"
@@ -111,12 +110,10 @@ sudo systemctl enable mariadb >/dev/null 2>&1 || true
 sudo systemctl start mariadb
 sleep 3
 
-### ===== Wait for MariaDB with timeout =====
 echo "Waiting for MariaDB to start on port ${DB_PORT}..."
 TIMEOUT=60
 ELAPSED=0
 while [ $ELAPSED -lt $TIMEOUT ]; do
-  # <CHANGE> Connect without password since we're using --skip-grant-tables
   if mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -e "SELECT 1;" >/dev/null 2>&1; then
     echo -e "${GREEN}MariaDB is ready ✓${NC}"
     break
@@ -136,7 +133,6 @@ fi
 
 echo -e "${LIGHT_BLUE}Configuring MariaDB root user...${NC}"
 
-# <CHANGE> Set root password while using --skip-grant-tables
 mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root <<SQL
 FLUSH PRIVILEGES;
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
@@ -146,7 +142,6 @@ SQL
 
 echo -e "${GREEN}Root password set.${NC}"
 
-# <CHANGE> Stop MariaDB and restart without --skip-grant-tables
 echo -e "${LIGHT_BLUE}Restarting MariaDB with normal authentication...${NC}"
 sudo systemctl stop mariadb
 sleep 2
@@ -154,7 +149,6 @@ sudo systemctl unset-environment MYSQLD_OPTS
 sudo systemctl start mariadb
 sleep 3
 
-# Test connection with password on TCP
 echo -e "${LIGHT_BLUE}Testing MariaDB root login on port ${DB_PORT}...${NC}"
 if ! mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT VERSION();" >/dev/null 2>&1; then
     die "Cannot login to MariaDB root user with password. Check logs."
@@ -162,7 +156,6 @@ fi
 
 echo -e "${GREEN}MariaDB root password verified on TCP.${NC}"
 
-# Create frappe DB user (if not exists)
 echo -e "${LIGHT_BLUE}Creating MariaDB user '${MYSQL_USER}'...${NC}"
 mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -p"${MYSQL_ROOT_PASS}" <<SQL
 CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'127.0.0.1' IDENTIFIED BY '${MYSQL_PASS}';
@@ -188,7 +181,6 @@ if ! command -v bench >/dev/null 2>&1; then
   pipx install frappe-bench --force || python3 -m pip install --user frappe-bench
 fi
 
-# initialize bench
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 if [ ! -d "$BENCH_NAME" ]; then
@@ -197,7 +189,6 @@ if [ ! -d "$BENCH_NAME" ]; then
 fi
 cd "$BENCH_NAME"
 
-# Fix benches' db_host quoting issue
 echo -e "${LIGHT_BLUE}Configuring bench to use MariaDB on custom port...${NC}"
 bench config set-common-config -c db_host "'127.0.0.1'" || true
 bench config set-common-config -c db_port "${DB_PORT}" || true
@@ -205,33 +196,56 @@ bench config set-common-config -c mariadb_root_password "'${MYSQL_ROOT_PASS}'" |
 
 ### ===== Fetch apps =====
 echo -e "${LIGHT_BLUE}Fetching ERPNext and HRMS apps...${NC}"
-[ ! -d "apps/erpnext" ] && bench get-app --branch "$ERPNEXT_BRANCH" erpnext https://github.com/frappe/erpnext || echo -e "${YELLOW}ERPNext fetch skipped or failed${NC}"
-[ ! -d "apps/hrms" ] && bench get-app --branch "$HRMS_BRANCH" hrms https://github.com/frappe/hrms || echo -e "${YELLOW}HRMS fetch skipped or failed${NC}"
 
-# Custom apps
-if [ "${USE_LOCAL_APPS}" = "false" ]; then
+# <CHANGE> Add verbose output and better error handling for app fetching
+if [ ! -d "apps/erpnext" ]; then
+  echo "Fetching ERPNext from GitHub..."
+  bench get-app --branch "$ERPNEXT_BRANCH" erpnext https://github.com/frappe/erpnext 2>&1 | tail -20 || {
+    echo -e "${YELLOW}ERPNext fetch failed, continuing...${NC}"
+  }
+fi
+
+if [ ! -d "apps/hrms" ]; then
+  echo "Fetching HRMS from GitHub..."
+  bench get-app --branch "$HRMS_BRANCH" hrms https://github.com/frappe/hrms 2>&1 | tail -20 || {
+    echo -e "${YELLOW}HRMS fetch failed, continuing...${NC}"
+  }
+fi
+
+# Custom apps (optional)
+if [ "${USE_LOCAL_APPS}" = "false" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
   export GIT_TRACE=0
-  [ ! -d "apps/mmcy_hrms" ] && bench get-app --branch "$CUSTOM_BRANCH" mmcy_hrms "$CUSTOM_HR_REPO" || echo -e "${YELLOW}Custom HRMS fetch skipped${NC}"
-  [ ! -d "apps/mmcy_asset_management" ] && bench get-app --branch "$CUSTOM_BRANCH" mmcy_asset_management "$CUSTOM_ASSET_REPO" || echo -e "${YELLOW}Custom Asset fetch skipped${NC}"
-  [ ! -d "apps/mmcy_it_operations" ] && bench get-app --branch "$CUSTOM_BRANCH" mmcy_it_operations "$CUSTOM_IT_REPO" || echo -e "${YELLOW}Custom IT fetch skipped${NC}"
+  [ ! -d "apps/mmcy_hrms" ] && bench get-app --branch "$CUSTOM_BRANCH" mmcy_hrms "$CUSTOM_HR_REPO" 2>&1 | tail -10 || echo -e "${YELLOW}Custom HRMS fetch skipped${NC}"
+  [ ! -d "apps/mmcy_asset_management" ] && bench get-app --branch "$CUSTOM_BRANCH" mmcy_asset_management "$CUSTOM_ASSET_REPO" 2>&1 | tail -10 || echo -e "${YELLOW}Custom Asset fetch skipped${NC}"
+  [ ! -d "apps/mmcy_it_operations" ] && bench get-app --branch "$CUSTOM_BRANCH" mmcy_it_operations "$CUSTOM_IT_REPO" 2>&1 | tail -10 || echo -e "${YELLOW}Custom IT fetch skipped${NC}"
   unset GIT_TRACE
+fi
+
+# <CHANGE> Verify ERPNext and HRMS exist before proceeding
+if [ ! -d "apps/erpnext" ] || [ ! -d "apps/hrms" ]; then
+  echo -e "${RED}Warning: ERPNext or HRMS not found. These are required for Frappe to work properly.${NC}"
+  echo "Attempting to fetch them again..."
+  bench get-app --branch "$ERPNEXT_BRANCH" erpnext https://github.com/frappe/erpnext || die "Failed to fetch ERPNext"
+  bench get-app --branch "$HRMS_BRANCH" hrms https://github.com/frappe/hrms || die "Failed to fetch HRMS"
 fi
 
 ### ===== Create site =====
 echo -e "${LIGHT_BLUE}Creating site '${SITE_NAME}'...${NC}"
 bench drop-site "${SITE_NAME}" --no-backup --force \
   --db-root-username root \
-  --db-root-password "${MYSQL_ROOT_PASS}" || true
+  --db-root-password "${MYSQL_ROOT_PASS}" 2>&1 | tail -5 || true
 
+# <CHANGE> Add verbose output to see what's happening during site creation
 bench new-site "${SITE_NAME}" \
   --db-host "127.0.0.1" \
   --db-port "${DB_PORT}" \
   --db-root-username root \
   --db-root-password "${MYSQL_ROOT_PASS}" \
-  --admin-password "${ADMIN_PASS}" || {
-    echo -e "${RED}Failed to create site. Debug info:${NC}"
-    sudo journalctl -u mariadb -n 80 --no-pager || true
-    tail -n 80 logs/* || true
+  --admin-password "${ADMIN_PASS}" \
+  --verbose 2>&1 | tail -50 || {
+    echo -e "${RED}Failed to create site. Full debug info:${NC}"
+    sudo journalctl -u mariadb -n 100 --no-pager || true
+    tail -n 100 logs/* 2>/dev/null || true
     die "bench new-site failed"
   }
 
@@ -251,24 +265,22 @@ GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_NAME}'@'127.0.0.1';
 FLUSH PRIVILEGES;
 SQL
     echo -e "${GREEN}Site DB user configured successfully.${NC}"
-  else
-    echo -e "${YELLOW}Could not parse site_config.json for DB credentials.${NC}"
   fi
 fi
 
 ### ===== Install apps into site =====
-echo -e "${LIGHT_BLUE}Installing apps into ${SITE_NAME} (if present)...${NC}"
-bench --site "${SITE_NAME}" install-app erpnext || echo -e "${YELLOW}ERPNext install skipped/warn${NC}"
-bench --site "${SITE_NAME}" install-app hrms || echo -e "${YELLOW}HRMS install skipped/warn${NC}"
+echo -e "${LIGHT_BLUE}Installing apps into ${SITE_NAME}...${NC}"
+bench --site "${SITE_NAME}" install-app erpnext 2>&1 | tail -20 || echo -e "${YELLOW}ERPNext install skipped/warn${NC}"
+bench --site "${SITE_NAME}" install-app hrms 2>&1 | tail -20 || echo -e "${YELLOW}HRMS install skipped/warn${NC}"
 
 if [ -d "apps/mmcy_hrms" ]; then
-  bench --site "${SITE_NAME}" install-app mmcy_hrms || echo -e "${YELLOW}Custom HRMS install skipped/warn${NC}"
+  bench --site "${SITE_NAME}" install-app mmcy_hrms 2>&1 | tail -10 || echo -e "${YELLOW}Custom HRMS install skipped/warn${NC}"
 fi
 if [ -d "apps/mmcy_asset_management" ]; then
-  bench --site "${SITE_NAME}" install-app mmcy_asset_management || echo -e "${YELLOW}Custom Asset install skipped/warn${NC}"
+  bench --site "${SITE_NAME}" install-app mmcy_asset_management 2>&1 | tail -10 || echo -e "${YELLOW}Custom Asset install skipped/warn${NC}"
 fi
 if [ -d "apps/mmcy_it_operations" ]; then
-  bench --site "${SITE_NAME}" install-app mmcy_it_operations || echo -e "${YELLOW}Custom IT install skipped/warn${NC}"
+  bench --site "${SITE_NAME}" install-app mmcy_it_operations 2>&1 | tail -10 || echo -e "${YELLOW}Custom IT install skipped/warn${NC}"
 fi
 
 echo -e "${GREEN}Frappe setup completed!${NC}"

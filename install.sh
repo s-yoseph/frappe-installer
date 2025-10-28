@@ -111,59 +111,30 @@ sudo systemctl daemon-reload
 sudo systemctl enable mariadb >/dev/null 2>&1 || true
 sudo systemctl start mariadb
 
-# Wait for MariaDB (use default socket while it starts)
-echo -n "Waiting for MariaDB to become ready"
-for i in {1..60}; do
-  if sudo mysqladmin ping -h 127.0.0.1 --silent >/dev/null 2>&1; then
-    echo " ✓"
-    break
-  fi
-  echo -n "."
-  sleep 1
-  if [ $i -eq 60 ]; then
-    echo
-    sudo journalctl -u mariadb -n 100 --no-pager || true
-    die "MariaDB failed to start in time."
-  fi
-done
+### ===== MariaDB setup =====
+sudo systemctl stop mariadb || true
+sudo systemctl start mariadb
 
+# Wait for MariaDB via socket first (default)
 echo "Waiting for MariaDB to start..."
 until sudo mariadb -e "SELECT 1;" >/dev/null 2>&1; do
     sleep 2
 done
 echo "MariaDB is ready ✓"
 
-# Set root password and authentication plugin
-MYSQL_ROOT_PASSWORD="YourRootPasswordHere"
-echo "Configuring MariaDB root user..."
+# Set root password properly (force mysql_native_password)
 sudo mariadb <<EOF
-ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
-FLUSH PRIVILEGES;
-EOF
-echo "MariaDB root user configured ✓"
-
-
-# Use sudo mariadb (shell as root) to run ALTER USER safely
-sudo mariadb <<SQL || die "Failed to run mariaDB commands to set root password"
--- Set root password and use mysql_native_password if plugin exists
 ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('${MYSQL_ROOT_PASS}');
 FLUSH PRIVILEGES;
-SQL
+EOF
 
-# Confirm we can connect using the new password on the custom port
-echo -e "${LIGHT_BLUE}Testing MariaDB root login on port ${DB_PORT}...${NC}"
-# Some MariaDB installs ignore custom port until a restart; we'll restart to ensure custom conf is loaded
+# Restart MariaDB to ensure port changes are applied
 sudo systemctl restart mariadb
-sleep 1
-# Try connect using TCP to port (127.0.0.1): important to force TCP so custom port used
+sleep 2
+
+# Test TCP connection on custom port
 if ! mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT VERSION();" >/dev/null 2>&1; then
-  # If connecting via TCP fails, maybe server still listening default socket; try mysql client with socket path
-  echo -e "${YELLOW}Warning: Could not connect via TCP:${NC} trying socket ${MYSQL_SOCKET}"
-  if ! sudo mysql --socket="${MYSQL_SOCKET}" -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT VERSION();" >/dev/null 2>&1; then
-    echo -e "${RED}Failed to authenticate root after password change. Check MariaDB logs:${NC}"
-    sudo tail -n 80 ${LOG_DIR}/error.log || true
-    die "MySQL root authentication failed."
-  fi
+    die "MariaDB root login failed. Check logs."
 fi
 
 echo -e "${GREEN}MariaDB root password set and tested.${NC}"

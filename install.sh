@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # install.sh - Full corrected Frappe + ERPNext + custom apps installer (Ubuntu / WSL)
-# - Fixes bench set-common-config quoting issue
-# - Handles MariaDB root auth (unix_socket -> password)
+# - Fixes MariaDB root auth (unix_socket -> password)
+# - Uses unix_socket first to set password, then TCP
+# - Handles bench set-common-config quoting issue
 # - Ensures logs/sockets exist and MariaDB runs on custom port
-# - Fetches apps and creates a site
 set -euo pipefail
 
 ### ===== CONFIG =====
@@ -74,7 +74,7 @@ echo -e "${LIGHT_BLUE}Preparing MariaDB environment...${NC}"
 
 MYSQL_DATA_DIR=/var/lib/mysql
 MYSQL_RUN_DIR=/run/mysqld
-MYSQL_SOCKET="/tmp/mysql_${DB_PORT}.sock"
+MYSQL_SOCKET="/run/mysqld/mysqld.sock"
 LOG_DIR=/var/log/mysql
 
 # Ensure log dir and files exist to avoid mariadb startup errors
@@ -110,14 +110,15 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable mariadb >/dev/null 2>&1 || true
 sudo systemctl start mariadb
-sleep 2
+sleep 3
 
-### ===== Wait for MariaDB with timeout (FIXED) =====
+### ===== Wait for MariaDB with timeout =====
 echo "Waiting for MariaDB to start on port ${DB_PORT}..."
 TIMEOUT=60
 ELAPSED=0
 while [ $ELAPSED -lt $TIMEOUT ]; do
-  if mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -e "SELECT 1;" >/dev/null 2>&1; then
+  # <CHANGE> Try unix_socket first (no password needed initially)
+  if sudo mysql -u root -e "SELECT 1;" >/dev/null 2>&1; then
     echo -e "${GREEN}MariaDB is ready ✓${NC}"
     break
   fi
@@ -136,43 +137,30 @@ fi
 
 echo -e "${LIGHT_BLUE}Configuring MariaDB root user...${NC}"
 
-# Check current root auth plugin
-current_plugin=$(mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -sNe "SELECT plugin FROM mysql.user WHERE user='root' AND host='localhost';" 2>/dev/null || echo "")
-
-if [ "$current_plugin" != "mysql_native_password" ]; then
-  echo "Root user uses $current_plugin plugin, switching to mysql_native_password..."
-  mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root <<SQL
-ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('${MYSQL_ROOT_PASS}');
+# <CHANGE> Connect via unix_socket (no password) to set the password
+echo "Setting root password via unix_socket..."
+sudo mysql -u root <<SQL
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
 FLUSH PRIVILEGES;
 SQL
-else
-  echo "Root user already uses mysql_native_password, skipping change."
-fi
 
-# Test connection with password on TCP
-echo -e "${LIGHT_BLUE}Testing MariaDB root login on port ${DB_PORT}...${NC}"
-if ! mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT VERSION();" >/dev/null 2>&1; then
-    die "Cannot login to MariaDB root user. Check logs."
-fi
+echo -e "${GREEN}Root password set.${NC}"
 
-echo -e "${GREEN}MariaDB root password set and verified.${NC}"
-
-# Restart MariaDB to ensure port changes are applied
+# Restart MariaDB to ensure all changes take effect
 sudo systemctl restart mariadb
 sleep 3
 
-# Test TCP connection on custom port again
+# <CHANGE> Test connection with password on TCP
+echo -e "${LIGHT_BLUE}Testing MariaDB root login on port ${DB_PORT}...${NC}"
 if ! mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT VERSION();" >/dev/null 2>&1; then
-    die "MariaDB root login failed after restart. Check logs."
+    die "Cannot login to MariaDB root user with password. Check logs."
 fi
 
-echo -e "${GREEN}MariaDB root password set and tested.${NC}"
+echo -e "${GREEN}MariaDB root password verified on TCP.${NC}"
 
 # Create frappe DB user (if not exists)
 echo -e "${LIGHT_BLUE}Creating MariaDB user '${MYSQL_USER}'...${NC}"
-# Use TCP connection if possible
-mysql_cmd="mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p${MYSQL_ROOT_PASS}"
-$mysql_cmd <<SQL
+mysql --protocol=TCP -h 127.0.0.1 -P "${DB_PORT}" -u root -p"${MYSQL_ROOT_PASS}" <<SQL
 CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'127.0.0.1' IDENTIFIED BY '${MYSQL_PASS}';
 CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'localhost' IDENTIFIED BY '${MYSQL_PASS}';
 GRANT ALL PRIVILEGES ON *.* TO '${MYSQL_USER}'@'127.0.0.1' WITH GRANT OPTION;

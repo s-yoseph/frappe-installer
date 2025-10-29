@@ -107,15 +107,84 @@ bench config set-common-config -c mariadb_root_password "'${MYSQL_ROOT_PASS}'" |
 
 echo -e "${BLUE}Fetching apps...${NC}"
 
+git config --global http.postBuffer 1024m
+git config --global http.maxRequestBuffer 100m
+git config --global core.compression 0
+git config --global http.lowSpeedLimit 1000
+git config --global http.lowSpeedTime 60
+git config --global fetch.timeout 600
+git config --global core.packedRefsTimeout 10
+
+clone_with_retry() {
+  local url=$1
+  local branch=$2
+  local dest=$3
+  local max_attempts=5
+  local attempt=1
+  local wait_time=10
+  
+  while [ $attempt -le $max_attempts ]; do
+    echo -e "${YELLOW}Attempt $attempt/$max_attempts: Cloning $url (branch: $branch)...${NC}"
+    
+    # Try with --depth 1 first (faster)
+    if GIT_TRACE=1 git clone --depth 1 --branch "$branch" --single-branch --progress "$url" "$dest" 2>&1 | tee /tmp/git_clone.log; then
+      echo -e "${GREEN}✓ Successfully cloned $dest${NC}"
+      return 0
+    fi
+    
+    # Check if it's a timeout/connection error
+    if grep -q "Connection timed out\|Connection reset\|Recv failure\|early EOF" /tmp/git_clone.log; then
+      echo -e "${YELLOW}⚠ Connection timeout detected, waiting ${wait_time}s before retry...${NC}"
+      rm -rf "$dest" 2>/dev/null || true
+      sleep $wait_time
+      # Exponential backoff
+      wait_time=$((wait_time * 2))
+      if [ $wait_time -gt 120 ]; then
+        wait_time=120
+      fi
+    else
+      echo -e "${RED}✗ Clone failed with non-timeout error${NC}"
+      cat /tmp/git_clone.log
+      rm -rf "$dest" 2>/dev/null || true
+      sleep 5
+    fi
+    
+    attempt=$((attempt + 1))
+  done
+  
+  echo -e "${YELLOW}Git clone failed, attempting fallback method (downloading zip)...${NC}"
+  
+  local zip_url="${url%.git}/archive/refs/heads/${branch}.zip"
+  local zip_file="/tmp/${dest##*/}.zip"
+  
+  if command -v wget >/dev/null 2>&1; then
+    if wget --timeout=60 --tries=3 -O "$zip_file" "$zip_url" 2>&1; then
+      mkdir -p "$dest"
+      unzip -q "$zip_file" -d "$dest"
+      # Move contents up one level (zip creates a subfolder)
+      local subfolder=$(ls -d "$dest"/*/ | head -1)
+      if [ -n "$subfolder" ]; then
+        mv "$subfolder"/* "$dest/"
+        rmdir "$subfolder"
+      fi
+      rm -f "$zip_file"
+      echo -e "${GREEN}✓ Successfully downloaded and extracted $dest${NC}"
+      return 0
+    fi
+  fi
+  
+  die "Failed to clone or download $url after $max_attempts attempts"
+}
+
 if [ ! -d "apps/erpnext" ]; then
   echo "Fetching ERPNext from branch ${ERPNEXT_BRANCH}..."
-  git clone --branch "$ERPNEXT_BRANCH" https://github.com/frappe/erpnext.git apps/erpnext || die "Failed to fetch ERPNext"
+  clone_with_retry "https://github.com/frappe/erpnext.git" "$ERPNEXT_BRANCH" "apps/erpnext"
   echo -e "${GREEN}✓ ERPNext fetched${NC}"
 fi
 
 if [ ! -d "apps/hrms" ]; then
   echo "Fetching HRMS from branch ${HRMS_BRANCH}..."
-  git clone --branch "$HRMS_BRANCH" https://github.com/frappe/hrms.git apps/hrms || die "Failed to fetch HRMS"
+  clone_with_retry "https://github.com/frappe/hrms.git" "$HRMS_BRANCH" "apps/hrms"
   echo -e "${GREEN}✓ HRMS fetched${NC}"
 fi
 

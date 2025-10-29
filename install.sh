@@ -192,6 +192,18 @@ echo -e "${GREEN}✓ All apps fetched${NC}"
 
 echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 
+echo "Cleaning up any leftover databases..."
+mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" <<SQL 2>/dev/null || true
+-- Drop any leftover databases for this site
+DROP DATABASE IF EXISTS \`$(echo ${SITE_NAME} | sed 's/\./_/g')\`;
+-- Drop any temporary databases that might exist
+DROP DATABASE IF EXISTS \`_afd6259a990fe66d\`;
+FLUSH PRIVILEGES;
+SQL
+
+# Remove site directory if it exists
+rm -rf "sites/${SITE_NAME}" 2>/dev/null || true
+
 # Try to drop existing site (ignore errors)
 bench drop-site "$SITE_NAME" --no-backup --force --db-root-username root --db-root-password "${MYSQL_ROOT_PASS}" 2>&1 | tail -3 || true
 

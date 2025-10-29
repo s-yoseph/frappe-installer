@@ -195,14 +195,14 @@ echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 # Try to drop existing site (ignore errors)
 bench drop-site "$SITE_NAME" --no-backup --force --db-root-username root --db-root-password "${MYSQL_ROOT_PASS}" 2>&1 | tail -3 || true
 
-# Create new site
-(echo "c"; sleep 2) | bench new-site "$SITE_NAME" \
+# Create new site with proper parameters for version-15
+bench new-site "$SITE_NAME" \
+  --db-type mariadb \
   --db-host "127.0.0.1" \
   --db-port "${DB_PORT}" \
   --db-root-username root \
   --db-root-password "${MYSQL_ROOT_PASS}" \
-  --admin-password "${ADMIN_PASS}" \
-  --no-interactive || die "Failed to create site '${SITE_NAME}'"
+  --admin-password "${ADMIN_PASS}" || die "Failed to create site '${SITE_NAME}'"
 
 echo -e "${GREEN}✓ Site created${NC}"
 

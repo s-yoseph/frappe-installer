@@ -4,6 +4,9 @@ set -euo pipefail
 FRAPPE_BRANCH="version-15"
 ERPNEXT_BRANCH="version-15"
 HRMS_BRANCH="version-15"
+CUSTOM_HRMS_BRANCH="main"
+CUSTOM_ASSET_BRANCH="main"
+CUSTOM_IT_BRANCH="main"
 BENCH_NAME="frappe-bench"
 INSTALL_DIR="${HOME}/frappe-setup"
 SITE_NAME="mmcy.hrms"
@@ -77,9 +80,7 @@ fi
 echo -e "${BLUE}Cleaning up old installation...${NC}"
 if [ -d "$INSTALL_DIR/$BENCH_NAME" ]; then
   echo "Removing old bench directory..."
-  # First try to fix permissions recursively
   sudo chmod -R u+w "$INSTALL_DIR/$BENCH_NAME" 2>/dev/null || true
-  # Then remove
   sudo rm -rf "$INSTALL_DIR/$BENCH_NAME" || die "Failed to remove old bench directory"
   echo -e "${GREEN}Old bench removed${NC}"
 fi
@@ -98,6 +99,9 @@ cat > apps.txt <<EOF
 frappe
 erpnext
 hrms
+custom-hrms
+custom-asset-management
+custom-it-operations
 EOF
 
 echo -e "${BLUE}Configuring bench...${NC}"
@@ -126,18 +130,15 @@ clone_with_retry() {
   while [ $attempt -le $max_attempts ]; do
     echo -e "${YELLOW}Attempt $attempt/$max_attempts: Cloning $url (branch: $branch)...${NC}"
     
-    # Try with --depth 1 first (faster)
     if GIT_TRACE=1 git clone --depth 1 --branch "$branch" --single-branch --progress "$url" "$dest" 2>&1 | tee /tmp/git_clone.log; then
       echo -e "${GREEN}✓ Successfully cloned $dest${NC}"
       return 0
     fi
     
-    # Check if it's a timeout/connection error
     if grep -q "Connection timed out\|Connection reset\|Recv failure\|early EOF" /tmp/git_clone.log; then
       echo -e "${YELLOW}⚠ Connection timeout detected, waiting ${wait_time}s before retry...${NC}"
       rm -rf "$dest" 2>/dev/null || true
       sleep $wait_time
-      # Exponential backoff
       wait_time=$((wait_time * 2))
       if [ $wait_time -gt 120 ]; then
         wait_time=120
@@ -161,7 +162,6 @@ clone_with_retry() {
     if wget --timeout=60 --tries=3 -O "$zip_file" "$zip_url" 2>&1; then
       mkdir -p "$dest"
       unzip -q "$zip_file" -d "$dest"
-      # Move contents up one level (zip creates a subfolder)
       local subfolder=$(ls -d "$dest"/*/ | head -1)
       if [ -n "$subfolder" ]; then
         mv "$subfolder"/* "$dest/"
@@ -188,26 +188,39 @@ if [ ! -d "apps/hrms" ]; then
   echo -e "${GREEN}✓ HRMS fetched${NC}"
 fi
 
+if [ ! -d "apps/custom-hrms" ]; then
+  echo "Fetching custom-hrms from branch ${CUSTOM_HRMS_BRANCH}..."
+  clone_with_retry "https://github.com/MMCY-Tech/custom-hrms.git" "$CUSTOM_HRMS_BRANCH" "apps/custom-hrms"
+  echo -e "${GREEN}✓ custom-hrms fetched${NC}"
+fi
+
+if [ ! -d "apps/custom-asset-management" ]; then
+  echo "Fetching custom-asset-management from branch ${CUSTOM_ASSET_BRANCH}..."
+  clone_with_retry "https://github.com/MMCY-Tech/custom-asset-management.git" "$CUSTOM_ASSET_BRANCH" "apps/custom-asset-management"
+  echo -e "${GREEN}✓ custom-asset-management fetched${NC}"
+fi
+
+if [ ! -d "apps/custom-it-operations" ]; then
+  echo "Fetching custom-it-operations from branch ${CUSTOM_IT_BRANCH}..."
+  clone_with_retry "https://github.com/MMCY-Tech/custom-it-operations.git" "$CUSTOM_IT_BRANCH" "apps/custom-it-operations"
+  echo -e "${GREEN}✓ custom-it-operations fetched${NC}"
+fi
+
 echo -e "${GREEN}✓ All apps fetched${NC}"
 
 echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 
 echo "Cleaning up any leftover databases..."
 mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" <<SQL 2>/dev/null || true
--- Drop any leftover databases for this site
 DROP DATABASE IF EXISTS \`$(echo ${SITE_NAME} | sed 's/\./_/g')\`;
--- Drop any temporary databases that might exist
 DROP DATABASE IF EXISTS \`_afd6259a990fe66d\`;
 FLUSH PRIVILEGES;
 SQL
 
-# Remove site directory if it exists
 rm -rf "sites/${SITE_NAME}" 2>/dev/null || true
 
-# Try to drop existing site (ignore errors)
 bench drop-site "$SITE_NAME" --no-backup --force --db-root-username root --db-root-password "${MYSQL_ROOT_PASS}" 2>&1 | tail -3 || true
 
-# Create new site with proper parameters for version-15
 bench new-site "$SITE_NAME" \
   --db-type mariadb \
   --db-host "127.0.0.1" \
@@ -218,7 +231,7 @@ bench new-site "$SITE_NAME" \
 
 echo -e "${GREEN}✓ Site created${NC}"
 
-echo -e "${BLUE}Installing apps...${NC}"
+echo -e "${BLUE}Installing apps on site...${NC}"
 
 if bench --site "$SITE_NAME" install-app erpnext; then
   echo -e "${GREEN}✓ ERPNext installed${NC}"
@@ -232,18 +245,50 @@ else
   echo -e "${YELLOW}⚠ HRMS installation had issues (may be normal)${NC}"
 fi
 
+if bench --site "$SITE_NAME" install-app custom-hrms; then
+  echo -e "${GREEN}✓ custom-hrms installed${NC}"
+else
+  echo -e "${YELLOW}⚠ custom-hrms installation had issues${NC}"
+fi
+
+if bench --site "$SITE_NAME" install-app custom-asset-management; then
+  echo -e "${GREEN}✓ custom-asset-management installed${NC}"
+else
+  echo -e "${YELLOW}⚠ custom-asset-management installation had issues${NC}"
+fi
+
+if bench --site "$SITE_NAME" install-app custom-it-operations; then
+  echo -e "${GREEN}✓ custom-it-operations installed${NC}"
+else
+  echo -e "${YELLOW}⚠ custom-it-operations installation had issues${NC}"
+fi
+
+echo -e "${BLUE}Building assets and clearing cache...${NC}"
+bench build || true
+bench --site "$SITE_NAME" clear-cache || true
+bench --site "$SITE_NAME" clear-website-cache || true
+
+echo -e "${BLUE}Verifying installed apps...${NC}"
+bench --site "$SITE_NAME" list-apps
+
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}✓ Installation Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo -e "${BLUE}Next steps:${NC}"
-echo "1. Add the following line to your /etc/hosts file (use sudo vim /etc/hosts or similar):"
-echo "127.0.0.1 ${SITE_NAME}"
-echo "2. Navigate to bench: cd ${INSTALL_DIR}/${BENCH_NAME}"
-echo "3. Start the server: bench start"
-echo "4. Access at: http://${SITE_NAME}:8000"
+echo "1. Navigate to bench: cd ${INSTALL_DIR}/${BENCH_NAME}"
+echo "2. Start the server: bench start"
+echo "3. Access at: http://localhost:8000"
 echo ""
 echo -e "${BLUE}Login credentials:${NC}"
 echo "Site: ${SITE_NAME}"
 echo "Admin Password: ${ADMIN_PASS}"
+echo ""
+echo -e "${BLUE}Installed apps:${NC}"
+echo "  - frappe (core framework)"
+echo "  - erpnext (ERP system)"
+echo "  - hrms (HR module)"
+echo "  - custom-hrms (your custom HRMS)"
+echo "  - custom-asset-management (your custom asset management)"
+echo "  - custom-it-operations (your custom IT operations)"
 echo ""

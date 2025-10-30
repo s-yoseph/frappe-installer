@@ -1,341 +1,294 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
-
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Configuration
-BENCH_DIR="/home/selam/frappe-setup/frappe-bench"
+FRAPPE_BRANCH="version-15"
+ERPNEXT_BRANCH="version-15"
+HRMS_BRANCH="version-15"
+CUSTOM_HRMS_BRANCH="main"
+CUSTOM_ASSET_BRANCH="main"
+CUSTOM_IT_BRANCH="main"
+BENCH_NAME="frappe-bench"
+INSTALL_DIR="${HOME}/frappe-setup"
 SITE_NAME="mmcy.hrms"
 DB_PORT=3307
-DB_USER="root"
 MYSQL_ROOT_PASS="root"
 ADMIN_PASS="admin"
-MYSQL_SOCKET="/run/mysqld/mysqld.sock"
 
-# Helper functions
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
+export PYTHONBREAKPOINT=0
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONUNBUFFERED=1
+export PATH="$HOME/.local/bin:$PATH"
 
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+BLUE='\033[1;34m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
 
-log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
+die() { echo -e "${RED}ERROR: $*${NC}" >&2; exit 1; }
 
-die() {
-    log_error "$1"
-    exit 1
-}
+echo -e "${BLUE}Installing Frappe (Fresh Start)...${NC}"
 
-clone_with_retry() {
-    local repo_url=$1
-    local app_name=$2
-    local branch=${3:-main}
-    local max_attempts=5
-    local attempt=1
-    
-    log_info "Fetching $app_name from branch $branch..."
-    
-    while [ $attempt -le $max_attempts ]; do
-        log_info "Attempt $attempt of $max_attempts for $app_name..."
-        
-        # Remove partial clone if it exists
-        rm -rf "$BENCH_DIR/apps/$app_name" 2>/dev/null || true
-        
-        # Configure git for large repos
-        git config --global http.postBuffer 524288000
-        git config --global http.lowSpeedLimit 0
-        git config --global http.lowSpeedTime 999999
-        
-        if git clone --depth 1 --single-branch --branch "$branch" "$repo_url" "$BENCH_DIR/apps/$app_name" 2>/dev/null; then
-            log_info "✓ Successfully cloned $app_name"
-            return 0
-        fi
-        
-        # Try alternative branches
-        if [ "$branch" != "main" ] && [ "$branch" != "master" ]; then
-            log_warning "Branch $branch not found, trying main..."
-            if git clone --depth 1 --single-branch --branch main "$repo_url" "$BENCH_DIR/apps/$app_name" 2>/dev/null; then
-                log_info "✓ Successfully cloned $app_name from main branch"
-                return 0
-            fi
-            
-            log_warning "Main branch not found, trying master..."
-            if git clone --depth 1 --single-branch --branch master "$repo_url" "$BENCH_DIR/apps/$app_name" 2>/dev/null; then
-                log_info "✓ Successfully cloned $app_name from master branch"
-                return 0
-            fi
-        fi
-        
-        attempt=$((attempt + 1))
-        if [ $attempt -le $max_attempts ]; then
-            sleep $((attempt * 10))
-        fi
-    done
-    
-    log_error "Failed to fetch $app_name after $max_attempts attempts"
-    return 1
-}
+# Install dependencies
+sudo apt update -y
+sudo apt install -y python3-dev python3.12-venv python3-pip redis-server mariadb-server mariadb-client curl git build-essential nodejs jq
+sudo npm install -g yarn || true
 
-# ============================================
-# PART 1: MARIADB SETUP
-# ============================================
-log_info "=========================================="
-log_info "PART 1: Setting up MariaDB"
-log_info "=========================================="
-
-log_info "Stopping any existing MariaDB/MySQL services..."
-sudo systemctl stop mariadb 2>/dev/null || true
+# Setup MariaDB
+echo -e "${BLUE}Setting up MariaDB...${NC}"
+sudo systemctl stop mariadb || true
 sleep 2
 
-log_info "Killing processes on port 3306 and 3307..."
-sudo fuser -k 3306/tcp 2>/dev/null || true
-sudo fuser -k 3307/tcp 2>/dev/null || true
-sleep 1
-
-log_info "Cleaning up socket and lock files..."
-sudo rm -f /run/mysqld/mysqld.sock* 2>/dev/null || true
-sudo rm -f /var/run/mysqld/mysqld.sock* 2>/dev/null || true
-sudo rm -f /tmp/mysql_*.sock 2>/dev/null || true
-sudo rm -f /var/lib/mysql/mysql.sock 2>/dev/null || true
-
-log_info "Creating log and run directories..."
-sudo mkdir -p /var/log/mysql /var/run/mysqld
-sudo chown mysql:mysql /var/log/mysql /var/run/mysqld
-sudo chmod 755 /var/log/mysql /var/run/mysqld
-
-log_info "Creating empty log files..."
-sudo touch /var/log/mysql/error.log /var/log/mysql/slow.log
-sudo chown mysql:mysql /var/log/mysql/*.log
-sudo chmod 644 /var/log/mysql/*.log
-
-log_info "Writing MariaDB configuration for port $DB_PORT..."
-sudo tee /etc/mysql/my.cnf > /dev/null <<EOF
+sudo tee /etc/mysql/mariadb.conf.d/99-custom.cnf > /dev/null <<EOF
 [mysqld]
-port = $DB_PORT
+port = ${DB_PORT}
 bind-address = 127.0.0.1
-socket = $MYSQL_SOCKET
+innodb_buffer_pool_size = 256M
 skip-external-locking
-key_buffer_size = 16M
-max_allowed_packet = 16M
-thread_stack = 192K
-thread_cache_size = 8
-myisam_recover_options = BACKUP
-query_cache_limit = 1M
-query_cache_size = 16M
-expire_logs_days = 10
-max_binlog_size = 100M
-log_error = /var/log/mysql/error.log
-slow_query_log = 1
-slow_query_log_file = /var/log/mysql/slow.log
-long_query_time = 2
-
-[mysqldump]
-quick
-quote-names
-max_allowed_packet = 16M
-
-[mysql]
-socket = $MYSQL_SOCKET
-
-[isamchk]
-key_buffer_size = 16M
 EOF
 
-log_info "Reloading systemd configuration..."
 sudo systemctl daemon-reload
-
-log_info "Enabling and starting MariaDB service..."
-sudo systemctl enable mariadb
+sudo systemctl set-environment MYSQLD_OPTS="--skip-grant-tables"
 sudo systemctl start mariadb
+sleep 4
 
-log_info "Waiting for MariaDB to accept connections..."
-for i in {1..120}; do
-    if mysql --socket="$MYSQL_SOCKET" -u root -e "SELECT 1" &>/dev/null; then
-        log_info "MariaDB is ready!"
-        break
+mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root <<SQL || die "Failed to set MariaDB root password"
+FLUSH PRIVILEGES;
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
+ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
+FLUSH PRIVILEGES;
+SQL
+
+sudo systemctl stop mariadb
+sleep 2
+sudo systemctl unset-environment MYSQLD_OPTS
+sudo systemctl start mariadb
+sleep 4
+
+if ! mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT 1;" >/dev/null 2>&1; then
+  die "MariaDB connection failed - verify port ${DB_PORT} is accessible"
+fi
+
+echo -e "${GREEN}✓ MariaDB ready on port ${DB_PORT}${NC}"
+
+# Install bench
+if ! command -v bench >/dev/null 2>&1; then
+  echo -e "${BLUE}Installing frappe-bench...${NC}"
+  python3 -m pip install --user frappe-bench || die "Failed to install frappe-bench"
+fi
+
+echo -e "${BLUE}Cleaning up old installation...${NC}"
+if [ -d "$INSTALL_DIR/$BENCH_NAME" ]; then
+  echo "Removing old bench directory..."
+  sudo chmod -R u+w "$INSTALL_DIR/$BENCH_NAME" 2>/dev/null || true
+  sudo rm -rf "$INSTALL_DIR/$BENCH_NAME" || die "Failed to remove old bench directory"
+  echo -e "${GREEN}Old bench removed${NC}"
+fi
+
+# Initialize bench fresh
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR"
+
+echo -e "${BLUE}Initializing fresh bench...${NC}"
+bench init "$BENCH_NAME" --frappe-branch "$FRAPPE_BRANCH" --python python3 || die "Failed to initialize bench"
+
+cd "$BENCH_NAME"
+
+echo -e "${BLUE}Creating clean apps configuration...${NC}"
+cat > apps.txt <<EOF
+frappe
+erpnext
+hrms
+custom-hrms
+custom-asset-management
+custom-it-operations
+EOF
+
+echo -e "${BLUE}Configuring bench...${NC}"
+bench config set-common-config -c db_host "'127.0.0.1'" || true
+bench config set-common-config -c db_port "${DB_PORT}" || true
+bench config set-common-config -c mariadb_root_password "'${MYSQL_ROOT_PASS}'" || true
+
+echo -e "${BLUE}Fetching apps...${NC}"
+
+git config --global http.postBuffer 1024m
+git config --global http.maxRequestBuffer 100m
+git config --global core.compression 0
+git config --global http.lowSpeedLimit 1000
+git config --global http.lowSpeedTime 60
+git config --global fetch.timeout 600
+git config --global core.packedRefsTimeout 10
+
+clone_with_retry() {
+  local url=$1
+  local branch=$2
+  local dest=$3
+  local max_attempts=5
+  local attempt=1
+  local wait_time=10
+  
+  while [ $attempt -le $max_attempts ]; do
+    echo -e "${YELLOW}Attempt $attempt/$max_attempts: Cloning $url (branch: $branch)...${NC}"
+    
+    if GIT_TRACE=1 git clone --depth 1 --branch "$branch" --single-branch --progress "$url" "$dest" 2>&1 | tee /tmp/git_clone.log; then
+      echo -e "${GREEN}✓ Successfully cloned $dest${NC}"
+      return 0
     fi
-    if [ $i -eq 120 ]; then
-        die "MariaDB did not start within 120 seconds"
+    
+    if grep -q "Connection timed out\|Connection reset\|Recv failure\|early EOF" /tmp/git_clone.log; then
+      echo -e "${YELLOW}⚠ Connection timeout detected, waiting ${wait_time}s before retry...${NC}"
+      rm -rf "$dest" 2>/dev/null || true
+      sleep $wait_time
+      wait_time=$((wait_time * 2))
+      if [ $wait_time -gt 120 ]; then
+        wait_time=120
+      fi
+    else
+      echo -e "${RED}✗ Clone failed with non-timeout error${NC}"
+      cat /tmp/git_clone.log
+      rm -rf "$dest" 2>/dev/null || true
+      sleep 5
     fi
-    sleep 1
-done
+    
+    attempt=$((attempt + 1))
+  done
+  
+  echo -e "${YELLOW}Git clone failed, attempting fallback method (downloading zip)...${NC}"
+  
+  local zip_url="${url%.git}/archive/refs/heads/${branch}.zip"
+  local zip_file="/tmp/${dest##*/}.zip"
+  
+  if command -v wget >/dev/null 2>&1; then
+    if wget --timeout=60 --tries=3 -O "$zip_file" "$zip_url" 2>&1; then
+      mkdir -p "$dest"
+      unzip -q "$zip_file" -d "$dest"
+      local subfolder=$(ls -d "$dest"/*/ | head -1)
+      if [ -n "$subfolder" ]; then
+        mv "$subfolder"/* "$dest/"
+        rmdir "$subfolder"
+      fi
+      rm -f "$zip_file"
+      echo -e "${GREEN}✓ Successfully downloaded and extracted $dest${NC}"
+      return 0
+    fi
+  fi
+  
+  die "Failed to clone or download $url after $max_attempts attempts"
+}
 
-log_info "Verifying MariaDB connection..."
-MYSQL_VERSION=$(mysql --socket="$MYSQL_SOCKET" -u root -e "SELECT VERSION();" 2>/dev/null | tail -1)
-log_info "✓ MariaDB is running: $MYSQL_VERSION"
+if [ ! -d "apps/erpnext" ]; then
+  echo "Fetching ERPNext from branch ${ERPNEXT_BRANCH}..."
+  clone_with_retry "https://github.com/frappe/erpnext.git" "$ERPNEXT_BRANCH" "apps/erpnext"
+  echo -e "${GREEN}✓ ERPNext fetched${NC}"
+fi
 
-# ============================================
-# PART 2: SYSTEM DEPENDENCIES
-# ============================================
-log_info "=========================================="
-log_info "PART 2: Installing System Dependencies"
-log_info "=========================================="
+if [ ! -d "apps/hrms" ]; then
+  echo "Fetching HRMS from branch ${HRMS_BRANCH}..."
+  clone_with_retry "https://github.com/frappe/hrms.git" "$HRMS_BRANCH" "apps/hrms"
+  echo -e "${GREEN}✓ HRMS fetched${NC}"
+fi
 
-log_info "Updating package manager..."
-sudo apt-get update -qq
+if [ ! -d "apps/custom-hrms" ]; then
+  echo "Fetching custom-hrms from branch ${CUSTOM_HRMS_BRANCH}..."
+  clone_with_retry "https://github.com/MMCY-Tech/custom-hrms.git" "$CUSTOM_HRMS_BRANCH" "apps/custom-hrms"
+  echo -e "${GREEN}✓ custom-hrms fetched${NC}"
+fi
 
-log_info "Installing Python and development tools..."
-sudo apt-get install -y -qq python3 python3-dev python3-pip python3-venv git curl wget
+if [ ! -d "apps/custom-asset-management" ]; then
+  echo "Fetching custom-asset-management from branch ${CUSTOM_ASSET_BRANCH}..."
+  clone_with_retry "https://github.com/MMCY-Tech/custom-asset-management.git" "$CUSTOM_ASSET_BRANCH" "apps/custom-asset-management"
+  echo -e "${GREEN}✓ custom-asset-management fetched${NC}"
+fi
 
-log_info "Installing Node.js and npm..."
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash - 2>/dev/null
-sudo apt-get install -y -qq nodejs
+if [ ! -d "apps/custom-it-operations" ]; then
+  echo "Fetching custom-it-operations from branch ${CUSTOM_IT_BRANCH}..."
+  clone_with_retry "https://github.com/MMCY-Tech/custom-it-operations.git" "$CUSTOM_IT_BRANCH" "apps/custom-it-operations"
+  echo -e "${GREEN}✓ custom-it-operations fetched${NC}"
+fi
 
-log_info "Installing additional dependencies..."
-sudo apt-get install -y -qq build-essential libssl-dev libffi-dev libmysqlclient-dev redis-server
+echo -e "${GREEN}✓ All apps fetched${NC}"
 
-log_info "✓ System dependencies installed"
+echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 
-# ============================================
-# PART 3: FRAPPE BENCH SETUP
-# ============================================
-log_info "=========================================="
-log_info "PART 3: Setting up Frappe Bench"
-log_info "=========================================="
+echo "Cleaning up any leftover databases..."
+mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" <<SQL 2>/dev/null || true
+DROP DATABASE IF EXISTS \`$(echo ${SITE_NAME} | sed 's/\./_/g')\`;
+DROP DATABASE IF EXISTS \`_afd6259a990fe66d\`;
+FLUSH PRIVILEGES;
+SQL
 
-log_info "Creating bench directory..."
-mkdir -p "$BENCH_DIR"
-cd "$BENCH_DIR"
+rm -rf "sites/${SITE_NAME}" 2>/dev/null || true
 
-log_info "Initializing Frappe bench..."
-bench init frappe-bench --frappe-branch version-15 --no-procfile --skip-redis-config-generation || die "Failed to initialize bench"
+bench drop-site "$SITE_NAME" --no-backup --force --db-root-username root --db-root-password "${MYSQL_ROOT_PASS}" 2>&1 | tail -3 || true
 
-cd "$BENCH_DIR/frappe-bench"
-
-log_info "✓ Bench frappe-bench initialized"
-
-# ============================================
-# PART 4: CLONING ALL APPS
-# ============================================
-log_info "=========================================="
-log_info "PART 4: Fetching All Apps"
-log_info "=========================================="
-
-log_info "Configuring bench..."
-bench config set-common-config -c db_host "127.0.0.1"
-bench config set-common-config -c db_port "$DB_PORT"
-
-log_info "Fetching apps..."
-
-# Clone ERPNext
-clone_with_retry "https://github.com/frappe/erpnext.git" "erpnext" "version-15" || log_warning "ERPNext fetch had issues"
-
-# Clone HRMS
-clone_with_retry "https://github.com/frappe/hrms.git" "hrms" "develop" || log_warning "HRMS fetch had issues"
-
-# Clone Custom Apps
-clone_with_retry "https://github.com/MMCY-Tech/custom-hrms.git" "custom_hrms" "main" || log_warning "custom-hrms fetch had issues"
-clone_with_retry "https://github.com/MMCY-Tech/custom-asset-management.git" "custom_asset_management" "main" || log_warning "custom-asset-management fetch had issues"
-clone_with_retry "https://github.com/MMCY-Tech/custom-it-operations.git" "custom_it_operations" "main" || log_warning "custom-it-operations fetch had issues"
-
-log_info "✓ All apps fetched"
-
-# ============================================
-# PART 5: CREATING SITE
-# ============================================
-log_info "=========================================="
-log_info "PART 5: Creating Site"
-log_info "=========================================="
-
-log_info "Cleaning up old site if it exists..."
-bench drop-site "$SITE_NAME" --force 2>/dev/null || true
-
-log_info "Dropping old database if it exists..."
-mysql --socket="$MYSQL_SOCKET" -u root -e "DROP DATABASE IF EXISTS \`${SITE_NAME//./}\`;" 2>/dev/null || true
-
-log_info "Creating site '$SITE_NAME'..."
 bench new-site "$SITE_NAME" \
   --db-type mariadb \
   --db-host "127.0.0.1" \
-  --db-port "$DB_PORT" \
+  --db-port "${DB_PORT}" \
   --db-root-username root \
-  --db-root-password "$MYSQL_ROOT_PASS" \
-  --admin-password "$ADMIN_PASS" || die "Failed to create site '$SITE_NAME'"
+  --db-root-password "${MYSQL_ROOT_PASS}" \
+  --admin-password "${ADMIN_PASS}" || die "Failed to create site '${SITE_NAME}'"
 
-log_info "✓ Site '$SITE_NAME' created successfully"
+echo -e "${GREEN}✓ Site created${NC}"
 
-# ============================================
-# PART 6: INSTALLING ALL APPS
-# ============================================
-log_info "=========================================="
-log_info "PART 6: Installing Apps on Site"
-log_info "=========================================="
+echo -e "${BLUE}Installing apps on site...${NC}"
 
-log_info "Installing ERPNext..."
-bench install-app erpnext || log_warning "ERPNext installation had issues"
+if bench --site "$SITE_NAME" install-app erpnext; then
+  echo -e "${GREEN}✓ ERPNext installed${NC}"
+else
+  echo -e "${YELLOW}⚠ ERPNext installation had issues (may be normal)${NC}"
+fi
 
-log_info "Installing HRMS..."
-bench install-app hrms || log_warning "HRMS installation had issues"
+if bench --site "$SITE_NAME" install-app hrms; then
+  echo -e "${GREEN}✓ HRMS installed${NC}"
+else
+  echo -e "${YELLOW}⚠ HRMS installation had issues (may be normal)${NC}"
+fi
 
-log_info "Installing custom apps..."
-bench install-app custom_hrms || log_warning "custom_hrms installation had issues"
-bench install-app custom_asset_management || log_warning "custom_asset_management installation had issues"
-bench install-app custom_it_operations || log_warning "custom_it_operations installation had issues"
+if bench --site "$SITE_NAME" install-app custom-hrms; then
+  echo -e "${GREEN}✓ custom-hrms installed${NC}"
+else
+  echo -e "${YELLOW}⚠ custom-hrms installation had issues${NC}"
+fi
 
-log_info "✓ All apps installed"
+if bench --site "$SITE_NAME" install-app custom-asset-management; then
+  echo -e "${GREEN}✓ custom-asset-management installed${NC}"
+else
+  echo -e "${YELLOW}⚠ custom-asset-management installation had issues${NC}"
+fi
 
-# ============================================
-# PART 7: FINALIZING SETUP
-# ============================================
-log_info "=========================================="
-log_info "PART 7: Finalizing Setup"
-log_info "=========================================="
+if bench --site "$SITE_NAME" install-app custom-it-operations; then
+  echo -e "${GREEN}✓ custom-it-operations installed${NC}"
+else
+  echo -e "${YELLOW}⚠ custom-it-operations installation had issues${NC}"
+fi
 
-log_info "Building assets..."
-bench build || log_warning "Build had issues"
+echo -e "${BLUE}Building assets and clearing cache...${NC}"
+bench build || true
+bench --site "$SITE_NAME" clear-cache || true
+bench --site "$SITE_NAME" clear-website-cache || true
 
-log_info "Clearing cache..."
-bench clear-cache || log_warning "Cache clear had issues"
+echo -e "${BLUE}Verifying installed apps...${NC}"
+bench --site "$SITE_NAME" list-apps
 
-log_info "Clearing website cache..."
-bench clear-website-cache || log_warning "Website cache clear had issues"
-
-log_info "Migrating database..."
-bench migrate || log_warning "Migration had issues"
-
-# ============================================
-# VERIFICATION
-# ============================================
-log_info "=========================================="
-log_info "VERIFICATION"
-log_info "=========================================="
-
-log_info "Installed apps:"
-bench list-apps
-
-log_info "Site configuration:"
-cat sites/"$SITE_NAME"/site_config.json | grep -E "db_|app" || true
-
-# ============================================
-# COMPLETION
-# ============================================
-log_info "=========================================="
-log_info "✓ INSTALLATION COMPLETE!"
-log_info "=========================================="
-log_info ""
-log_info "Next steps:"
-log_info "1. Navigate to bench: cd $BENCH_DIR/frappe-bench"
-log_info "2. Start the server: bench start"
-log_info "3. Access at: http://localhost:8000/app/home"
-log_info ""
-log_info "Login credentials:"
-log_info "Site: $SITE_NAME"
-log_info "Admin Password: $ADMIN_PASS"
-log_info ""
-log_info "Installed apps:"
-log_info "  - frappe (core)"
-log_info "  - erpnext"
-log_info "  - hrms"
-log_info "  - custom_hrms"
-log_info "  - custom_asset_management"
-log_info "  - custom_it_operations"
-log_info ""
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}✓ Installation Complete!${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo ""
+echo -e "${BLUE}Next steps:${NC}"
+echo "1. Navigate to bench: cd ${INSTALL_DIR}/${BENCH_NAME}"
+echo "2. Start the server: bench start"
+echo "3. Access at: http://localhost:8000"
+echo ""
+echo -e "${BLUE}Login credentials:${NC}"
+echo "Site: ${SITE_NAME}"
+echo "Admin Password: ${ADMIN_PASS}"
+echo ""
+echo -e "${BLUE}Installed apps:${NC}"
+echo "  - frappe (core framework)"
+echo "  - erpnext (ERP system)"
+echo "  - hrms (HR module)"
+echo "  - custom-hrms (your custom HRMS)"
+echo "  - custom-asset-management (your custom asset management)"
+echo "  - custom-it-operations (your custom IT operations)"
+echo ""

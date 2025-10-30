@@ -262,7 +262,6 @@ echo -e "${BLUE}Verifying installed apps...${NC}"
 INSTALLED_APPS=$(bench --site "$SITE_NAME" list-apps)
 echo "$INSTALLED_APPS"
 
-# Verify each required app is in the list
 for app in frappe erpnext hrms custom-hrms custom-asset-management custom-it-operations; do
   if echo "$INSTALLED_APPS" | grep -q "^$app$"; then
     echo -e "${GREEN}✓ $app verified${NC}"

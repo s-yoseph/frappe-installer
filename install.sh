@@ -208,6 +208,17 @@ fi
 
 echo -e "${GREEN}✓ All apps fetched${NC}"
 
+echo -e "${BLUE}Validating custom app structure...${NC}"
+for app in custom-hrms custom-asset-management custom-it-operations; do
+  if [ ! -f "apps/$app/hooks.py" ]; then
+    die "ERROR: apps/$app/hooks.py not found. Custom app structure is invalid."
+  fi
+  if [ ! -f "apps/$app/__init__.py" ]; then
+    die "ERROR: apps/$app/__init__.py not found. Custom app structure is invalid."
+  fi
+  echo -e "${GREEN}✓ $app structure validated${NC}"
+done
+
 echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 
 echo "Cleaning up any leftover databases..."
@@ -233,43 +244,43 @@ echo -e "${GREEN}✓ Site created${NC}"
 
 echo -e "${BLUE}Installing apps on site...${NC}"
 
-if bench --site "$SITE_NAME" install-app erpnext; then
-  echo -e "${GREEN}✓ ERPNext installed${NC}"
-else
-  echo -e "${YELLOW}⚠ ERPNext installation had issues (may be normal)${NC}"
-fi
+echo "Installing ERPNext..."
+bench --site "$SITE_NAME" install-app erpnext || die "Failed to install ERPNext"
+echo -e "${GREEN}✓ ERPNext installed${NC}"
 
-if bench --site "$SITE_NAME" install-app hrms; then
-  echo -e "${GREEN}✓ HRMS installed${NC}"
-else
-  echo -e "${YELLOW}⚠ HRMS installation had issues (may be normal)${NC}"
-fi
+echo "Installing HRMS..."
+bench --site "$SITE_NAME" install-app hrms || die "Failed to install HRMS"
+echo -e "${GREEN}✓ HRMS installed${NC}"
 
-if bench --site "$SITE_NAME" install-app custom-hrms; then
-  echo -e "${GREEN}✓ custom-hrms installed${NC}"
-else
-  echo -e "${YELLOW}⚠ custom-hrms installation had issues${NC}"
-fi
+echo "Installing custom-hrms..."
+bench --site "$SITE_NAME" install-app custom-hrms || die "Failed to install custom-hrms"
+echo -e "${GREEN}✓ custom-hrms installed${NC}"
 
-if bench --site "$SITE_NAME" install-app custom-asset-management; then
-  echo -e "${GREEN}✓ custom-asset-management installed${NC}"
-else
-  echo -e "${YELLOW}⚠ custom-asset-management installation had issues${NC}"
-fi
+echo "Installing custom-asset-management..."
+bench --site "$SITE_NAME" install-app custom-asset-management || die "Failed to install custom-asset-management"
+echo -e "${GREEN}✓ custom-asset-management installed${NC}"
 
-if bench --site "$SITE_NAME" install-app custom-it-operations; then
-  echo -e "${GREEN}✓ custom-it-operations installed${NC}"
-else
-  echo -e "${YELLOW}⚠ custom-it-operations installation had issues${NC}"
-fi
+echo "Installing custom-it-operations..."
+bench --site "$SITE_NAME" install-app custom-it-operations || die "Failed to install custom-it-operations"
+echo -e "${GREEN}✓ custom-it-operations installed${NC}"
 
 echo -e "${BLUE}Building assets and clearing cache...${NC}"
-bench build || true
-bench --site "$SITE_NAME" clear-cache || true
-bench --site "$SITE_NAME" clear-website-cache || true
+bench build || die "Failed to build assets"
+bench --site "$SITE_NAME" clear-cache || die "Failed to clear cache"
+bench --site "$SITE_NAME" clear-website-cache || die "Failed to clear website cache"
 
 echo -e "${BLUE}Verifying installed apps...${NC}"
-bench --site "$SITE_NAME" list-apps
+INSTALLED_APPS=$(bench --site "$SITE_NAME" list-apps)
+echo "$INSTALLED_APPS"
+
+# Verify each required app is in the list
+for app in frappe erpnext hrms custom-hrms custom-asset-management custom-it-operations; do
+  if echo "$INSTALLED_APPS" | grep -q "^$app$"; then
+    echo -e "${GREEN}✓ $app verified${NC}"
+  else
+    die "VERIFICATION FAILED: $app is not installed"
+  fi
+done
 
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}✓ Installation Complete!${NC}"

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 FRAPPE_BRANCH="version-15"
 ERPNEXT_BRANCH="version-15"
 HRMS_BRANCH="version-15"
-CUSTOM_HRMS_BRANCH="main"
-CUSTOM_ASSET_BRANCH="main"
-CUSTOM_IT_BRANCH="main"
+CUSTOM_HRMS_BRANCH="develop"
+CUSTOM_ASSET_BRANCH="develop"
+CUSTOM_IT_BRANCH="develop"
 BENCH_NAME="frappe-bench"
 INSTALL_DIR="${HOME}/frappe-setup"
 SITE_NAME="mmcy.hrms"
@@ -127,10 +128,15 @@ clone_with_retry() {
   local attempt=1
   local wait_time=10
   
+  local auth_url="$url"
+  if [ -n "$GITHUB_TOKEN" ]; then
+    auth_url="https://${GITHUB_TOKEN}@github.com/$(echo $url | sed 's/https:\/\/github\.com\///')"
+  fi
+  
   while [ $attempt -le $max_attempts ]; do
-    echo -e "${YELLOW}Attempt $attempt/$max_attempts: Cloning $url (branch: $branch)...${NC}"
+    echo -e "${YELLOW}Attempt $attempt/$max_attempts: Cloning $dest (branch: $branch) - shallow clone...${NC}"
     
-    if GIT_TRACE=1 git clone --depth 1 --branch "$branch" --single-branch --progress "$url" "$dest" 2>&1 | tee /tmp/git_clone.log; then
+    if GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$branch" --single-branch --progress "$auth_url" "$dest" 2>&1 | tee /tmp/git_clone.log; then
       echo -e "${GREEN}✓ Successfully cloned $dest${NC}"
       return 0
     fi
@@ -144,36 +150,24 @@ clone_with_retry() {
         wait_time=120
       fi
     else
-      echo -e "${RED}✗ Clone failed with non-timeout error${NC}"
-      cat /tmp/git_clone.log
+      echo -e "${RED}✗ Clone failed - trying main branch...${NC}"
       rm -rf "$dest" 2>/dev/null || true
+      
+      if [ "$branch" = "develop" ]; then
+        echo -e "${YELLOW}Retrying with main branch...${NC}"
+        if GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch main --single-branch --progress "$auth_url" "$dest" 2>&1; then
+          echo -e "${GREEN}✓ Successfully cloned $dest (from main branch)${NC}"
+          return 0
+        fi
+      fi
+      
       sleep 5
     fi
     
     attempt=$((attempt + 1))
   done
   
-  echo -e "${YELLOW}Git clone failed, attempting fallback method (downloading zip)...${NC}"
-  
-  local zip_url="${url%.git}/archive/refs/heads/${branch}.zip"
-  local zip_file="/tmp/${dest##*/}.zip"
-  
-  if command -v wget >/dev/null 2>&1; then
-    if wget --timeout=60 --tries=3 -O "$zip_file" "$zip_url" 2>&1; then
-      mkdir -p "$dest"
-      unzip -q "$zip_file" -d "$dest"
-      local subfolder=$(ls -d "$dest"/*/ | head -1)
-      if [ -n "$subfolder" ]; then
-        mv "$subfolder"/* "$dest/"
-        rmdir "$subfolder"
-      fi
-      rm -f "$zip_file"
-      echo -e "${GREEN}✓ Successfully downloaded and extracted $dest${NC}"
-      return 0
-    fi
-  fi
-  
-  die "Failed to clone or download $url after $max_attempts attempts"
+  die "Failed to clone $url after $max_attempts attempts"
 }
 
 if [ ! -d "apps/erpnext" ]; then

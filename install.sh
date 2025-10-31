@@ -318,9 +318,6 @@ if verify_app "custom-it-operations"; then
   fi
 fi
 
-echo -e "${BLUE}Running migrations...${NC}"
-bench --site "$SITE_NAME" migrate || true
-
 echo -e "${BLUE}Building assets...${NC}"
 bench build || true
 
@@ -330,7 +327,7 @@ bench --site "$SITE_NAME" clear-website-cache || true
 
 echo -e "${BLUE}Updating Procfile...${NC}"
 sed -i '/^web:/d' Procfile || true
-echo "web: bench serve --host 0.0.0.0 --port $SITE_PORT" >> Procfile
+echo "web: bench serve --port $SITE_PORT" >> Procfile
 
 # Add to hosts file
 if ! grep -q "^127.0.0.1[[:space:]]\+$SITE_NAME\$" /etc/hosts; then
@@ -348,7 +345,8 @@ echo ""
 echo -e "${BLUE}Next steps:${NC}"
 echo "1. Navigate to bench: cd ${INSTALL_DIR}/${BENCH_NAME}"
 echo "2. Start the server: bench start"
-echo "3. Access at: http://localhost:${SITE_PORT} or http://${SITE_NAME}:${SITE_PORT}"
+echo "3. In another terminal, run: bench --site $SITE_NAME migrate"
+echo "4. Access at: http://localhost:${SITE_PORT} or http://${SITE_NAME}:${SITE_PORT}"
 echo ""
 echo -e "${BLUE}Login credentials:${NC}"
 echo "Site: ${SITE_NAME}"

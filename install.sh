@@ -39,19 +39,16 @@ sudo apt install -y nodejs
 sudo npm install -g yarn
 
 # -------------------------------
-# 3. DATABASE SETUP
+# 3. DATABASE SETUP (FIXED)
 # -------------------------------
 echo "---- [4/8] Configuring MariaDB ----"
 sudo systemctl enable mariadb
 sudo systemctl start mariadb
 
-# Secure MariaDB setup
-sudo mysql -u root <<MYSQL_SCRIPT
-SET PASSWORD FOR 'root'@'localhost' = PASSWORD('${MYSQL_ROOT_PASSWORD}');
-DELETE FROM mysql.user WHERE User='';
-DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
-DROP DATABASE IF EXISTS test;
-DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+# Use unix_socket authentication to execute root SQL commands directly
+sudo mysql <<MYSQL_SCRIPT
+CREATE USER IF NOT EXISTS 'frappe'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
+GRANT ALL PRIVILEGES ON *.* TO 'frappe'@'localhost' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 MYSQL_SCRIPT
 
@@ -120,7 +117,6 @@ bench --site site1.local install-app custom_it_operations
 bench build
 bench restart
 
-# Optional: start in production mode later with nginx + supervisor
 EOF
 
 # -------------------------------

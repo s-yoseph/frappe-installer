@@ -4,9 +4,9 @@ set -euo pipefail
 FRAPPE_BRANCH="version-15"
 ERPNEXT_BRANCH="version-15"
 HRMS_BRANCH="version-15"
-CUSTOM_HRMS_BRANCH="main"
-CUSTOM_ASSET_BRANCH="main"
-CUSTOM_IT_BRANCH="main"
+CUSTOM_HRMS_BRANCH="develop"
+CUSTOM_ASSET_BRANCH="develop"
+CUSTOM_IT_BRANCH="develop"
 BENCH_NAME="frappe-bench"
 INSTALL_DIR="${HOME}/frappe-setup"
 SITE_NAME="mmcy.hrms"
@@ -207,28 +207,6 @@ if [ ! -d "apps/custom-it-operations" ]; then
 fi
 
 echo -e "${GREEN}✓ All apps fetched${NC}"
-
-echo -e "${BLUE}Installing apps into bench environment...${NC}"
-
-echo "Installing ERPNext into environment..."
-bench install-app erpnext || die "Failed to install ERPNext into environment"
-echo -e "${GREEN}✓ ERPNext installed into environment${NC}"
-
-echo "Installing HRMS into environment..."
-bench install-app hrms || die "Failed to install HRMS into environment"
-echo -e "${GREEN}✓ HRMS installed into environment${NC}"
-
-echo "Installing custom-hrms into environment..."
-bench install-app custom-hrms || die "Failed to install custom-hrms into environment"
-echo -e "${GREEN}✓ custom-hrms installed into environment${NC}"
-
-echo "Installing custom-asset-management into environment..."
-bench install-app custom-asset-management || die "Failed to install custom-asset-management into environment"
-echo -e "${GREEN}✓ custom-asset-management installed into environment${NC}"
-
-echo "Installing custom-it-operations into environment..."
-bench install-app custom-it-operations || die "Failed to install custom-it-operations into environment"
-echo -e "${GREEN}✓ custom-it-operations installed into environment${NC}"
 
 echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 

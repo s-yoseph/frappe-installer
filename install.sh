@@ -208,6 +208,26 @@ fi
 
 echo -e "${GREEN}✓ All apps fetched${NC}"
 
+echo -e "${BLUE}Installing Python dependencies for all apps...${NC}"
+
+source env/bin/activate || die "Failed to activate virtual environment"
+
+for app_dir in apps/frappe apps/erpnext apps/hrms apps/custom-hrms apps/custom-asset-management apps/custom-it-operations; do
+  if [ -d "$app_dir" ]; then
+    app_name=$(basename "$app_dir")
+    echo -e "${YELLOW}Installing dependencies for $app_name...${NC}"
+    
+    if [ -f "$app_dir/requirements.txt" ]; then
+      pip install --quiet --no-cache-dir -e "$app_dir" 2>&1 || echo -e "${YELLOW}⚠ Dependency installation had issues for $app_name but continuing...${NC}"
+    else
+      pip install --quiet --no-cache-dir -e "$app_dir" 2>&1 || echo -e "${YELLOW}⚠ Dependency installation had issues for $app_name but continuing...${NC}"
+    fi
+  fi
+done
+
+deactivate || true
+echo -e "${GREEN}✓ Python dependencies installed${NC}"
+
 echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 
 echo "Cleaning up any leftover databases..."

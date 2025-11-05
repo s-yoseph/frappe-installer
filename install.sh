@@ -208,6 +208,28 @@ fi
 
 echo -e "${GREEN}✓ All apps fetched${NC}"
 
+echo -e "${BLUE}Installing apps into bench environment...${NC}"
+
+echo "Installing ERPNext into environment..."
+bench install-app erpnext || die "Failed to install ERPNext into environment"
+echo -e "${GREEN}✓ ERPNext installed into environment${NC}"
+
+echo "Installing HRMS into environment..."
+bench install-app hrms || die "Failed to install HRMS into environment"
+echo -e "${GREEN}✓ HRMS installed into environment${NC}"
+
+echo "Installing custom-hrms into environment..."
+bench install-app custom-hrms || die "Failed to install custom-hrms into environment"
+echo -e "${GREEN}✓ custom-hrms installed into environment${NC}"
+
+echo "Installing custom-asset-management into environment..."
+bench install-app custom-asset-management || die "Failed to install custom-asset-management into environment"
+echo -e "${GREEN}✓ custom-asset-management installed into environment${NC}"
+
+echo "Installing custom-it-operations into environment..."
+bench install-app custom-it-operations || die "Failed to install custom-it-operations into environment"
+echo -e "${GREEN}✓ custom-it-operations installed into environment${NC}"
+
 echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 
 echo "Cleaning up any leftover databases..."

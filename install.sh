@@ -1,17 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-GITHUB_TOKEN="${GITHUB_TOKEN:-}"
-if [ -z "${GITHUB_TOKEN}" ]; then
-  echo "Your private repos require authentication."
-  read -s -p "Enter your GitHub Personal Access Token (with repo read access): " GITHUB_TOKEN
-  echo
-  if [ -z "${GITHUB_TOKEN}" ]; then
-    echo "ERROR: GitHub token is required to clone private repositories"
-    exit 1
-  fi
-fi
-
 FRAPPE_BRANCH="version-15"
 ERPNEXT_BRANCH="version-15"
 HRMS_BRANCH="version-15"
@@ -191,25 +180,39 @@ if [ ! -d "apps/hrms" ]; then
   echo -e "${GREEN}✓ HRMS fetched${NC}"
 fi
 
-echo "Fetching custom-hrms..."
-if clone_with_retry "https://github.com/MMCY-Tech/custom-hrms.git" "$CUSTOM_BRANCH" "apps/custom-hrms" 2>&1; then
-  echo -e "${GREEN}✓ custom-hrms fetched${NC}"
-else
-  echo -e "${YELLOW}⚠ custom-hrms fetch failed (will continue)${NC}"
+echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}About to clone private custom apps...${NC}"
+echo -e "${BLUE}========================================${NC}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+if [ -z "${GITHUB_TOKEN}" ]; then
+  read -s -p "Enter your GitHub Personal Access Token (with repo read access): " GITHUB_TOKEN
+  echo
+  if [ -z "${GITHUB_TOKEN}" ]; then
+    echo -e "${YELLOW}⚠ No token provided - custom apps will be skipped${NC}"
+  fi
 fi
 
-echo "Fetching custom-asset-management..."
-if clone_with_retry "https://github.com/MMCY-Tech/custom-asset-management.git" "$CUSTOM_BRANCH" "apps/custom-asset-management" 2>&1; then
-  echo -e "${GREEN}✓ custom-asset-management fetched${NC}"
-else
-  echo -e "${YELLOW}⚠ custom-asset-management fetch failed (will continue)${NC}"
-fi
+if [ -n "${GITHUB_TOKEN}" ]; then
+  echo "Fetching custom-hrms..."
+  if clone_with_retry "https://github.com/MMCY-Tech/custom-hrms.git" "$CUSTOM_BRANCH" "apps/custom-hrms" 2>&1; then
+    echo -e "${GREEN}✓ custom-hrms fetched${NC}"
+  else
+    echo -e "${YELLOW}⚠ custom-hrms fetch failed (will continue)${NC}"
+  fi
 
-echo "Fetching custom-it-operations..."
-if clone_with_retry "https://github.com/MMCY-Tech/custom-it-operations.git" "$CUSTOM_BRANCH" "apps/custom-it-operations" 2>&1; then
-  echo -e "${GREEN}✓ custom-it-operations fetched${NC}"
-else
-  echo -e "${YELLOW}⚠ custom-it-operations fetch failed (will continue)${NC}"
+  echo "Fetching custom-asset-management..."
+  if clone_with_retry "https://github.com/MMCY-Tech/custom-asset-management.git" "$CUSTOM_BRANCH" "apps/custom-asset-management" 2>&1; then
+    echo -e "${GREEN}✓ custom-asset-management fetched${NC}"
+  else
+    echo -e "${YELLOW}⚠ custom-asset-management fetch failed (will continue)${NC}"
+  fi
+
+  echo "Fetching custom-it-operations..."
+  if clone_with_retry "https://github.com/MMCY-Tech/custom-it-operations.git" "$CUSTOM_BRANCH" "apps/custom-it-operations" 2>&1; then
+    echo -e "${GREEN}✓ custom-it-operations fetched${NC}"
+  else
+    echo -e "${YELLOW}⚠ custom-it-operations fetch failed (will continue)${NC}"
+  fi
 fi
 
 echo -e "${GREEN}✓ App fetching completed${NC}"

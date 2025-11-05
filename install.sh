@@ -5,21 +5,19 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 FRAPPE_BRANCH="version-15"
 ERPNEXT_BRANCH="version-15"
 HRMS_BRANCH="version-15"
-CUSTOM_HRMS_BRANCH="develop"
-CUSTOM_ASSET_BRANCH="develop"
-CUSTOM_IT_BRANCH="develop"
+CUSTOM_BRANCH="develop"
 BENCH_NAME="frappe-bench"
-INSTALL_DIR="${HOME}/frappe-setup"
+INSTALL_DIR="$HOME/frappe-setup"
 SITE_NAME="mmcy.hrms"
-DB_PORT=3307
-MYSQL_ROOT_PASS="root"
-ADMIN_PASS="admin"
 SITE_PORT="8000"
-
-export PYTHONBREAKPOINT=0
-export PYTHONDONTWRITEBYTECODE=1
-export PYTHONUNBUFFERED=1
-export PATH="$HOME/.local/bin:$PATH"
+DB_PORT="3307"
+MYSQL_USER="frappe"
+MYSQL_PASS="frappe"
+ROOT_MYSQL_PASS="root"
+ADMIN_PASS="admin"
+CUSTOM_HR_REPO_BASE="github.com/MMCY-Tech/custom-hrms.git"
+CUSTOM_ASSET_REPO_BASE="github.com/MMCY-Tech/custom-asset-management.git"
+CUSTOM_IT_REPO_BASE="github.com/MMCY-Tech/custom-it-operations.git"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -65,8 +63,8 @@ sleep 4
 
 mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root <<SQL || die "Failed to set MariaDB root password"
 FLUSH PRIVILEGES;
-ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
-ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${ROOT_MYSQL_PASS}';
+ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${ROOT_MYSQL_PASS}';
 FLUSH PRIVILEGES;
 SQL
 
@@ -76,7 +74,7 @@ sudo systemctl unset-environment MYSQLD_OPTS
 sudo systemctl start mariadb
 sleep 4
 
-if ! mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT 1;" >/dev/null 2>&1; then
+if ! mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${ROOT_MYSQL_PASS}" -e "SELECT 1;" >/dev/null 2>&1; then
   die "MariaDB connection failed - verify port ${DB_PORT} is accessible"
 fi
 
@@ -108,7 +106,7 @@ cd "$BENCH_NAME"
 echo -e "${BLUE}Configuring bench...${NC}"
 bench config set-common-config -c db_host "'127.0.0.1'" || true
 bench config set-common-config -c db_port "${DB_PORT}" || true
-bench config set-common-config -c mariadb_root_password "'${MYSQL_ROOT_PASS}'" || true
+bench config set-common-config -c mariadb_root_password "'${ROOT_MYSQL_PASS}'" || true
 
 echo -e "${BLUE}Fetching apps...${NC}"
 
@@ -183,21 +181,21 @@ if [ ! -d "apps/hrms" ]; then
 fi
 
 echo "Fetching custom-hrms..."
-if clone_with_retry "https://github.com/MMCY-Tech/custom-hrms.git" "$CUSTOM_HRMS_BRANCH" "apps/custom-hrms" 2>&1; then
+if clone_with_retry "https://github.com/MMCY-Tech/custom-hrms.git" "$CUSTOM_BRANCH" "apps/custom-hrms" 2>&1; then
   echo -e "${GREEN}✓ custom-hrms fetched${NC}"
 else
   echo -e "${YELLOW}⚠ custom-hrms fetch failed (will continue)${NC}"
 fi
 
 echo "Fetching custom-asset-management..."
-if clone_with_retry "https://github.com/MMCY-Tech/custom-asset-management.git" "$CUSTOM_ASSET_BRANCH" "apps/custom-asset-management" 2>&1; then
+if clone_with_retry "https://github.com/MMCY-Tech/custom-asset-management.git" "$CUSTOM_BRANCH" "apps/custom-asset-management" 2>&1; then
   echo -e "${GREEN}✓ custom-asset-management fetched${NC}"
 else
   echo -e "${YELLOW}⚠ custom-asset-management fetch failed (will continue)${NC}"
 fi
 
 echo "Fetching custom-it-operations..."
-if clone_with_retry "https://github.com/MMCY-Tech/custom-it-operations.git" "$CUSTOM_IT_BRANCH" "apps/custom-it-operations" 2>&1; then
+if clone_with_retry "https://github.com/MMCY-Tech/custom-it-operations.git" "$CUSTOM_BRANCH" "apps/custom-it-operations" 2>&1; then
   echo -e "${GREEN}✓ custom-it-operations fetched${NC}"
 else
   echo -e "${YELLOW}⚠ custom-it-operations fetch failed (will continue)${NC}"
@@ -231,7 +229,7 @@ fi
 echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 
 echo "Cleaning up any leftover databases..."
-mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" <<SQL 2>/dev/null || true
+mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${ROOT_MYSQL_PASS}" <<SQL 2>/dev/null || true
 DROP DATABASE IF EXISTS \`$(echo ${SITE_NAME} | sed 's/\./_/g')\`;
 DROP DATABASE IF EXISTS \`_afd6259a990fe66d\`;
 FLUSH PRIVILEGES;
@@ -239,7 +237,7 @@ SQL
 
 rm -rf "sites/${SITE_NAME}" 2>/dev/null || true
 
-bench drop-site "$SITE_NAME" --no-backup --force --db-root-username root --db-root-password "${MYSQL_ROOT_PASS}" 2>&1 | tail -3 || true
+bench drop-site "$SITE_NAME" --no-backup --force --db-root-username root --db-root-password "${ROOT_MYSQL_PASS}" 2>&1 | tail -3 || true
 
 sleep 5
 
@@ -248,7 +246,7 @@ bench new-site "$SITE_NAME" \
   --db-host "127.0.0.1" \
   --db-port "${DB_PORT}" \
   --db-root-username root \
-  --db-root-password "${MYSQL_ROOT_PASS}" \
+  --db-root-password "${ROOT_MYSQL_PASS}" \
   --admin-password "${ADMIN_PASS}" || die "Failed to create site '${SITE_NAME}'"
 
 echo -e "${GREEN}✓ Site created${NC}"
@@ -268,7 +266,7 @@ else
   echo -e "${YELLOW}⚠ HRMS installation had issues${NC}"
 fi
 
-if verify_app "custom-hrms"; then
+if [ -d "apps/custom-hrms" ]; then
   echo "Installing custom-hrms with fixture workaround..."
   FIXTURE_PATH="apps/custom-hrms/custom_hrms/fixtures"
   if [ -d "$FIXTURE_PATH" ]; then
@@ -286,7 +284,7 @@ if verify_app "custom-hrms"; then
   fi
 fi
 
-if verify_app "custom-asset-management"; then
+if [ -d "apps/custom-asset-management" ]; then
   echo "Installing custom-asset-management with fixture workaround..."
   FIXTURE_PATH="apps/custom-asset-management/custom_asset_management/fixtures"
   if [ -d "$FIXTURE_PATH" ]; then
@@ -304,7 +302,7 @@ if verify_app "custom-asset-management"; then
   fi
 fi
 
-if verify_app "custom-it-operations"; then
+if [ -d "apps/custom-it-operations" ]; then
   if bench --site "$SITE_NAME" install-app custom-it-operations; then
     echo -e "${GREEN}✓ custom-it-operations installed${NC}"
   else

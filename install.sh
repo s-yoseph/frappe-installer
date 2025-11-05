@@ -255,15 +255,27 @@ fi
 echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 
 echo "Cleaning up any leftover databases..."
-mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root <<SQL 2>/dev/null || true
+mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${ROOT_MYSQL_PASS}" <<SQL 2>/dev/null || true
+-- Drop site database by name
 DROP DATABASE IF EXISTS \`$(echo ${SITE_NAME} | sed 's/\./_/g')\`;
+
+-- Drop all databases with random names (common temporary databases)
 DROP DATABASE IF EXISTS \`_afd6259a990fe66d\`;
+
+-- Drop any databases matching the site pattern
+SELECT GROUP_CONCAT(CONCAT('DROP DATABASE \`', SCHEMA_NAME, '\`;')) INTO @sql 
+FROM INFORMATION_SCHEMA.SCHEMATA 
+WHERE SCHEMA_NAME LIKE '${SITE_NAME}%' OR SCHEMA_NAME LIKE '%mmcy%' OR SCHEMA_NAME LIKE '%hrms%';
+
+SET @sql = IFNULL(@sql, 'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
 FLUSH PRIVILEGES;
 SQL
 
 rm -rf "sites/${SITE_NAME}" 2>/dev/null || true
-
-bench drop-site "$SITE_NAME" --no-backup --force --db-root-username root --db-root-password "${ROOT_MYSQL_PASS}" 2>&1 | tail -3 || true
 
 sleep 5
 

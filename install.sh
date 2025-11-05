@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+GITHUB_TOKEN=""
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -t|--token)
+      GITHUB_TOKEN="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
 FRAPPE_BRANCH="version-15"
 ERPNEXT_BRANCH="version-15"
 HRMS_BRANCH="version-15"
@@ -183,13 +196,12 @@ fi
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}About to clone private custom apps...${NC}"
 echo -e "${BLUE}========================================${NC}"
-GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+
 if [ -z "${GITHUB_TOKEN}" ]; then
-  read -s -p "Enter your GitHub Personal Access Token (with repo read access): " GITHUB_TOKEN
-  echo
-  if [ -z "${GITHUB_TOKEN}" ]; then
-    echo -e "${YELLOW}⚠ No token provided - custom apps will be skipped${NC}"
-  fi
+  echo -e "${YELLOW}⚠ No GitHub token provided - custom apps will be skipped${NC}"
+  echo -e "${YELLOW}To include custom apps, run: curl -fsSL ... | bash -s -- -t YOUR_TOKEN${NC}"
+else
+  echo -e "${GREEN}✓ GitHub token received${NC}"
 fi
 
 if [ -n "${GITHUB_TOKEN}" ]; then
@@ -243,7 +255,7 @@ fi
 echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 
 echo "Cleaning up any leftover databases..."
-mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${ROOT_MYSQL_PASS}" <<SQL 2>/dev/null || true
+mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root <<SQL 2>/dev/null || true
 DROP DATABASE IF EXISTS \`$(echo ${SITE_NAME} | sed 's/\./_/g')\`;
 DROP DATABASE IF EXISTS \`_afd6259a990fe66d\`;
 FLUSH PRIVILEGES;

@@ -2,6 +2,16 @@
 set -euo pipefail
 
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+if [ -z "${GITHUB_TOKEN}" ]; then
+  echo "Your private repos require authentication."
+  read -s -p "Enter your GitHub Personal Access Token (with repo read access): " GITHUB_TOKEN
+  echo
+  if [ -z "${GITHUB_TOKEN}" ]; then
+    echo "ERROR: GitHub token is required to clone private repositories"
+    exit 1
+  fi
+fi
+
 FRAPPE_BRANCH="version-15"
 ERPNEXT_BRANCH="version-15"
 HRMS_BRANCH="version-15"
@@ -127,8 +137,9 @@ clone_with_retry() {
   local wait_time=10
   
   local auth_url="$url"
-  if [ -n "$GITHUB_TOKEN" ]; then
-    auth_url="https://${GITHUB_TOKEN}@github.com/$(echo $url | sed 's/https:\/\/github\.com\///')"
+  if [[ "$url" == *"MMCY-Tech"* ]]; then
+    # For private MMCY repos, use token authentication
+    auth_url="https://token:${GITHUB_TOKEN}@github.com/$(echo $url | sed 's|https://github.com/||')"
   fi
   
   while [ $attempt -le $max_attempts ]; do

@@ -1,32 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-GITHUB_TOKEN=""
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    -t|--token)
-      GITHUB_TOKEN="$2"
-      shift 2
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
-
 FRAPPE_BRANCH="version-15"
 ERPNEXT_BRANCH="version-15"
 HRMS_BRANCH="version-15"
-CUSTOM_BRANCH="develop"
+CUSTOM_HRMS_BRANCH="main"
+CUSTOM_ASSET_BRANCH="main"
+CUSTOM_IT_BRANCH="main"
 BENCH_NAME="frappe-bench"
-INSTALL_DIR="$HOME/frappe-setup"
+INSTALL_DIR="${HOME}/frappe-setup"
 SITE_NAME="mmcy.hrms"
-SITE_PORT="8000"
-DB_PORT="3307"
-MYSQL_USER="frappe"
-MYSQL_PASS="frappe"
-ROOT_MYSQL_PASS="root"
+DB_PORT=3307
+MYSQL_ROOT_PASS="root"
 ADMIN_PASS="admin"
+
+export PYTHONBREAKPOINT=0
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONUNBUFFERED=1
+export PATH="$HOME/.local/bin:$PATH"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -63,8 +54,8 @@ sleep 4
 
 mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root <<SQL || die "Failed to set MariaDB root password"
 FLUSH PRIVILEGES;
-ALTER USER 'root'@'localhost' IDENTIFIED BY '${ROOT_MYSQL_PASS}';
-ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${ROOT_MYSQL_PASS}';
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
+ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
 FLUSH PRIVILEGES;
 SQL
 
@@ -74,7 +65,7 @@ sudo systemctl unset-environment MYSQLD_OPTS
 sudo systemctl start mariadb
 sleep 4
 
-if ! mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${ROOT_MYSQL_PASS}" -e "SELECT 1;" >/dev/null 2>&1; then
+if ! mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT 1;" >/dev/null 2>&1; then
   die "MariaDB connection failed - verify port ${DB_PORT} is accessible"
 fi
 
@@ -103,121 +94,182 @@ bench init "$BENCH_NAME" --frappe-branch "$FRAPPE_BRANCH" --python python3 || di
 
 cd "$BENCH_NAME"
 
+echo -e "${BLUE}Creating clean apps configuration...${NC}"
+cat > apps.txt <<EOF
+frappe
+erpnext
+hrms
+custom-hrms
+custom-asset-management
+custom-it-operations
+EOF
+
 echo -e "${BLUE}Configuring bench...${NC}"
 bench config set-common-config -c db_host "'127.0.0.1'" || true
 bench config set-common-config -c db_port "${DB_PORT}" || true
-bench config set-common-config -c mariadb_root_password "'${ROOT_MYSQL_PASS}'" || true
+bench config set-common-config -c mariadb_root_password "'${MYSQL_ROOT_PASS}'" || true
 
 echo -e "${BLUE}Fetching apps...${NC}"
 
-echo "Fetching ERPNext..."
-bench get-app --branch "$ERPNEXT_BRANCH" erpnext https://github.com/frappe/erpnext || die "Failed to get ERPNext"
-echo -e "${GREEN}✓ ERPNext fetched and registered${NC}"
+git config --global http.postBuffer 1024m
+git config --global http.maxRequestBuffer 100m
+git config --global core.compression 0
+git config --global http.lowSpeedLimit 1000
+git config --global http.lowSpeedTime 60
+git config --global fetch.timeout 600
+git config --global core.packedRefsTimeout 10
 
-echo "Fetching HRMS..."
-bench get-app --branch "$HRMS_BRANCH" hrms https://github.com/frappe/hrms || die "Failed to get HRMS"
-echo -e "${GREEN}✓ HRMS fetched and registered${NC}"
-
-if [ -z "${GITHUB_TOKEN}" ]; then
-  echo -e "${YELLOW}⚠ No GitHub token provided - custom apps will be skipped${NC}"
-  echo -e "${YELLOW}To include custom apps, run: curl -fsSL ... | bash -s -- -t YOUR_TOKEN${NC}"
-else
-  echo -e "${GREEN}✓ GitHub token received${NC}"
-
-  echo "Fetching custom_hrms..."
-  if GIT_TERMINAL_PROMPT=0 bench get-app --branch "$CUSTOM_BRANCH" custom_hrms "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-hrms.git" 2>&1; then
-    echo -e "${GREEN}✓ custom_hrms fetched and registered${NC}"
-  else
-    echo -e "${YELLOW}⚠ custom_hrms fetch failed (will continue)${NC}"
+clone_with_retry() {
+  local url=$1
+  local branch=$2
+  local dest=$3
+  local max_attempts=5
+  local attempt=1
+  local wait_time=10
+  
+  while [ $attempt -le $max_attempts ]; do
+    echo -e "${YELLOW}Attempt $attempt/$max_attempts: Cloning $url (branch: $branch)...${NC}"
+    
+    if GIT_TRACE=1 git clone --depth 1 --branch "$branch" --single-branch --progress "$url" "$dest" 2>&1 | tee /tmp/git_clone.log; then
+      echo -e "${GREEN}✓ Successfully cloned $dest${NC}"
+      return 0
+    fi
+    
+    if grep -q "Connection timed out\|Connection reset\|Recv failure\|early EOF" /tmp/git_clone.log; then
+      echo -e "${YELLOW}⚠ Connection timeout detected, waiting ${wait_time}s before retry...${NC}"
+      rm -rf "$dest" 2>/dev/null || true
+      sleep $wait_time
+      wait_time=$((wait_time * 2))
+      if [ $wait_time -gt 120 ]; then
+        wait_time=120
+      fi
+    else
+      echo -e "${RED}✗ Clone failed with non-timeout error${NC}"
+      cat /tmp/git_clone.log
+      rm -rf "$dest" 2>/dev/null || true
+      sleep 5
+    fi
+    
+    attempt=$((attempt + 1))
+  done
+  
+  echo -e "${YELLOW}Git clone failed, attempting fallback method (downloading zip)...${NC}"
+  
+  local zip_url="${url%.git}/archive/refs/heads/${branch}.zip"
+  local zip_file="/tmp/${dest##*/}.zip"
+  
+  if command -v wget >/dev/null 2>&1; then
+    if wget --timeout=60 --tries=3 -O "$zip_file" "$zip_url" 2>&1; then
+      mkdir -p "$dest"
+      unzip -q "$zip_file" -d "$dest"
+      local subfolder=$(ls -d "$dest"/*/ | head -1)
+      if [ -n "$subfolder" ]; then
+        mv "$subfolder"/* "$dest/"
+        rmdir "$subfolder"
+      fi
+      rm -f "$zip_file"
+      echo -e "${GREEN}✓ Successfully downloaded and extracted $dest${NC}"
+      return 0
+    fi
   fi
+  
+  die "Failed to clone or download $url after $max_attempts attempts"
+}
 
-  echo "Fetching custom_asset_management..."
-  if GIT_TERMINAL_PROMPT=0 bench get-app --branch "$CUSTOM_BRANCH" custom_asset_management "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-asset-management.git" 2>&1; then
-    echo -e "${GREEN}✓ custom_asset_management fetched and registered${NC}"
-  else
-    echo -e "${YELLOW}⚠ custom_asset_management fetch failed (will continue)${NC}"
-  fi
+if [ ! -d "apps/erpnext" ]; then
+  echo "Fetching ERPNext from branch ${ERPNEXT_BRANCH}..."
+  clone_with_retry "https://github.com/frappe/erpnext.git" "$ERPNEXT_BRANCH" "apps/erpnext"
+  echo -e "${GREEN}✓ ERPNext fetched${NC}"
+fi
 
-  echo "Fetching custom_it_operations..."
-  if GIT_TERMINAL_PROMPT=0 bench get-app --branch "$CUSTOM_BRANCH" custom_it_operations "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-it-operations.git" 2>&1; then
-    echo -e "${GREEN}✓ custom_it_operations fetched and registered${NC}"
-  else
-    echo -e "${YELLOW}⚠ custom_it_operations fetch failed (will continue)${NC}"
-  fi
+if [ ! -d "apps/hrms" ]; then
+  echo "Fetching HRMS from branch ${HRMS_BRANCH}..."
+  clone_with_retry "https://github.com/frappe/hrms.git" "$HRMS_BRANCH" "apps/hrms"
+  echo -e "${GREEN}✓ HRMS fetched${NC}"
+fi
+
+if [ ! -d "apps/custom-hrms" ]; then
+  echo "Fetching custom-hrms from branch ${CUSTOM_HRMS_BRANCH}..."
+  clone_with_retry "https://github.com/MMCY-Tech/custom-hrms.git" "$CUSTOM_HRMS_BRANCH" "apps/custom-hrms"
+  echo -e "${GREEN}✓ custom-hrms fetched${NC}"
+fi
+
+if [ ! -d "apps/custom-asset-management" ]; then
+  echo "Fetching custom-asset-management from branch ${CUSTOM_ASSET_BRANCH}..."
+  clone_with_retry "https://github.com/MMCY-Tech/custom-asset-management.git" "$CUSTOM_ASSET_BRANCH" "apps/custom-asset-management"
+  echo -e "${GREEN}✓ custom-asset-management fetched${NC}"
+fi
+
+if [ ! -d "apps/custom-it-operations" ]; then
+  echo "Fetching custom-it-operations from branch ${CUSTOM_IT_BRANCH}..."
+  clone_with_retry "https://github.com/MMCY-Tech/custom-it-operations.git" "$CUSTOM_IT_BRANCH" "apps/custom-it-operations"
+  echo -e "${GREEN}✓ custom-it-operations fetched${NC}"
 fi
 
 echo -e "${GREEN}✓ All apps fetched${NC}"
 
-echo -e "${BLUE}Available apps:${NC}"
-bench list-apps
-
 echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 
 echo "Cleaning up any leftover databases..."
-mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${ROOT_MYSQL_PASS}" <<SQL 2>/dev/null || true
+mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" <<SQL 2>/dev/null || true
 DROP DATABASE IF EXISTS \`$(echo ${SITE_NAME} | sed 's/\./_/g')\`;
+DROP DATABASE IF EXISTS \`_afd6259a990fe66d\`;
 FLUSH PRIVILEGES;
 SQL
 
 rm -rf "sites/${SITE_NAME}" 2>/dev/null || true
 
-sleep 5
+bench drop-site "$SITE_NAME" --no-backup --force --db-root-username root --db-root-password "${MYSQL_ROOT_PASS}" 2>&1 | tail -3 || true
 
 bench new-site "$SITE_NAME" \
   --db-type mariadb \
   --db-host "127.0.0.1" \
   --db-port "${DB_PORT}" \
   --db-root-username root \
-  --db-root-password "${ROOT_MYSQL_PASS}" \
+  --db-root-password "${MYSQL_ROOT_PASS}" \
   --admin-password "${ADMIN_PASS}" || die "Failed to create site '${SITE_NAME}'"
 
 echo -e "${GREEN}✓ Site created${NC}"
 
 echo -e "${BLUE}Installing apps on site...${NC}"
 
-bench --site "$SITE_NAME" install-app erpnext || die "ERPNext installation failed"
+echo "Installing ERPNext..."
+bench --site "$SITE_NAME" install-app erpnext || die "Failed to install ERPNext"
 echo -e "${GREEN}✓ ERPNext installed${NC}"
 
-bench --site "$SITE_NAME" install-app hrms || die "HRMS installation failed"
+echo "Installing HRMS..."
+bench --site "$SITE_NAME" install-app hrms || die "Failed to install HRMS"
 echo -e "${GREEN}✓ HRMS installed${NC}"
 
-if [ -d "apps/custom_hrms" ]; then
-  bench --site "$SITE_NAME" install-app custom_hrms || echo -e "${YELLOW}⚠ custom_hrms installation had issues${NC}"
-  echo -e "${GREEN}✓ custom_hrms installed${NC}"
-fi
+echo "Installing custom-hrms..."
+bench --site "$SITE_NAME" install-app custom-hrms || die "Failed to install custom-hrms"
+echo -e "${GREEN}✓ custom-hrms installed${NC}"
 
-if [ -d "apps/custom_asset_management" ]; then
-  bench --site "$SITE_NAME" install-app custom_asset_management || echo -e "${YELLOW}⚠ custom_asset_management installation had issues${NC}"
-  echo -e "${GREEN}✓ custom_asset_management installed${NC}"
-fi
+echo "Installing custom-asset-management..."
+bench --site "$SITE_NAME" install-app custom-asset-management || die "Failed to install custom-asset-management"
+echo -e "${GREEN}✓ custom-asset-management installed${NC}"
 
-if [ -d "apps/custom_it_operations" ]; then
-  bench --site "$SITE_NAME" install-app custom_it_operations || echo -e "${YELLOW}⚠ custom_it_operations installation had issues${NC}"
-  echo -e "${GREEN}✓ custom_it_operations installed${NC}"
-fi
+echo "Installing custom-it-operations..."
+bench --site "$SITE_NAME" install-app custom-it-operations || die "Failed to install custom-it-operations"
+echo -e "${GREEN}✓ custom-it-operations installed${NC}"
 
-echo -e "${BLUE}Running migrate...${NC}"
-bench --site "$SITE_NAME" migrate || true
-
-echo -e "${BLUE}Building assets...${NC}"
-bench build || true
-
-echo -e "${BLUE}Clearing cache...${NC}"
-bench --site "$SITE_NAME" clear-cache || true
-bench --site "$SITE_NAME" clear-website-cache || true
-
-echo -e "${BLUE}Updating Procfile...${NC}"
-sed -i '/^web:/d' Procfile || true
-echo "web: bench serve --port $SITE_PORT" >> Procfile
-
-# Add to hosts file
-if ! grep -q "^127.0.0.1[[:space:]]\+$SITE_NAME\$" /etc/hosts; then
-  echo "127.0.0.1 $SITE_NAME" | sudo tee -a /etc/hosts >/dev/null
-  echo -e "${GREEN}✓ Added $SITE_NAME to /etc/hosts${NC}"
-fi
+echo -e "${BLUE}Building assets and clearing cache...${NC}"
+bench build || die "Failed to build assets"
+bench --site "$SITE_NAME" clear-cache || die "Failed to clear cache"
+bench --site "$SITE_NAME" clear-website-cache || die "Failed to clear website cache"
 
 echo -e "${BLUE}Verifying installed apps...${NC}"
-bench --site "$SITE_NAME" list-apps
+INSTALLED_APPS=$(bench --site "$SITE_NAME" list-apps)
+echo "$INSTALLED_APPS"
+
+# Verify each required app is in the list
+for app in frappe erpnext hrms custom-hrms custom-asset-management custom-it-operations; do
+  if echo "$INSTALLED_APPS" | grep -q "^$app$"; then
+    echo -e "${GREEN}✓ $app verified${NC}"
+  else
+    die "VERIFICATION FAILED: $app is not installed"
+  fi
+done
 
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}✓ Installation Complete!${NC}"
@@ -226,11 +278,17 @@ echo ""
 echo -e "${BLUE}Next steps:${NC}"
 echo "1. Navigate to bench: cd ${INSTALL_DIR}/${BENCH_NAME}"
 echo "2. Start the server: bench start"
-echo "3. Access at: http://localhost:${SITE_PORT} or http://${SITE_NAME}:${SITE_PORT}"
+echo "3. Access at: http://localhost:8000"
 echo ""
 echo -e "${BLUE}Login credentials:${NC}"
 echo "Site: ${SITE_NAME}"
 echo "Admin Password: ${ADMIN_PASS}"
 echo ""
-echo -e "${BLUE}To use custom apps, run with GitHub token:${NC}"
-echo "curl -fsSL https://your-script-url | bash -s -- -t YOUR_GITHUB_TOKEN"
+echo -e "${BLUE}Installed apps:${NC}"
+echo "  - frappe (core framework)"
+echo "  - erpnext (ERP system)"
+echo "  - hrms (HR module)"
+echo "  - custom-hrms (your custom HRMS)"
+echo "  - custom-asset-management (your custom asset management)"
+echo "  - custom-it-operations (your custom IT operations)"
+echo ""

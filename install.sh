@@ -206,21 +206,24 @@ fi
 
 if [ -n "${GITHUB_TOKEN}" ]; then
   echo "Fetching custom-hrms..."
-  if clone_with_retry "https://github.com/MMCY-Tech/custom-hrms.git" "$CUSTOM_BRANCH" "apps/custom-hrms" 2>&1; then
+  if clone_with_retry "https://github.com/MMCY-Tech/custom-hrms.git" "$CUSTOM_BRANCH" "apps/custom-hrms-tmp" 2>&1; then
+    mv "apps/custom-hrms-tmp" "apps/custom_hrms"
     echo -e "${GREEN}✓ custom-hrms fetched${NC}"
   else
     echo -e "${YELLOW}⚠ custom-hrms fetch failed (will continue)${NC}"
   fi
 
   echo "Fetching custom-asset-management..."
-  if clone_with_retry "https://github.com/MMCY-Tech/custom-asset-management.git" "$CUSTOM_BRANCH" "apps/custom-asset-management" 2>&1; then
+  if clone_with_retry "https://github.com/MMCY-Tech/custom-asset-management.git" "$CUSTOM_BRANCH" "apps/custom-asset-management-tmp" 2>&1; then
+    mv "apps/custom-asset-management-tmp" "apps/custom_asset_management"
     echo -e "${GREEN}✓ custom-asset-management fetched${NC}"
   else
     echo -e "${YELLOW}⚠ custom-asset-management fetch failed (will continue)${NC}"
   fi
 
   echo "Fetching custom-it-operations..."
-  if clone_with_retry "https://github.com/MMCY-Tech/custom-it-operations.git" "$CUSTOM_BRANCH" "apps/custom-it-operations" 2>&1; then
+  if clone_with_retry "https://github.com/MMCY-Tech/custom-it-operations.git" "$CUSTOM_BRANCH" "apps/custom-it-operations-tmp" 2>&1; then
+    mv "apps/custom-it-operations-tmp" "apps/custom_it_operations"
     echo -e "${GREEN}✓ custom-it-operations fetched${NC}"
   else
     echo -e "${YELLOW}⚠ custom-it-operations fetch failed (will continue)${NC}"
@@ -234,22 +237,22 @@ verify_app "frappe" || die "Core app 'frappe' is missing!"
 verify_app "erpnext" || die "Core app 'erpnext' is missing!"
 verify_app "hrms" || die "Core app 'hrms' is missing!"
 
-if verify_app "custom-hrms"; then
-  echo -e "${GREEN}✓ custom-hrms verified${NC}"
+if verify_app "custom_hrms"; then
+  echo -e "${GREEN}✓ custom_hrms verified${NC}"
 else
-  echo -e "${YELLOW}⚠ custom-hrms not found (will skip installation)${NC}"
+  echo -e "${YELLOW}⚠ custom_hrms not found (will skip installation)${NC}"
 fi
 
-if verify_app "custom-asset-management"; then
-  echo -e "${GREEN}✓ custom-asset-management verified${NC}"
+if verify_app "custom_asset_management"; then
+  echo -e "${GREEN}✓ custom_asset_management verified${NC}"
 else
-  echo -e "${YELLOW}⚠ custom-asset-management not found (will skip installation)${NC}"
+  echo -e "${YELLOW}⚠ custom_asset_management not found (will skip installation)${NC}"
 fi
 
-if verify_app "custom-it-operations"; then
-  echo -e "${GREEN}✓ custom-it-operations verified${NC}"
+if verify_app "custom_it_operations"; then
+  echo -e "${GREEN}✓ custom_it_operations verified${NC}"
 else
-  echo -e "${YELLOW}⚠ custom-it-operations not found (will skip installation)${NC}"
+  echo -e "${YELLOW}⚠ custom_it_operations not found (will skip installation)${NC}"
 fi
 
 echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
@@ -304,17 +307,17 @@ else
   echo -e "${YELLOW}⚠ HRMS installation had issues${NC}"
 fi
 
-if [ -d "apps/custom-hrms" ]; then
-  echo "Installing custom-hrms with fixture workaround..."
-  FIXTURE_PATH="apps/custom-hrms/custom_hrms/fixtures"
+if [ -d "apps/custom_hrms" ]; then
+  echo "Installing custom_hrms with fixture workaround..."
+  FIXTURE_PATH="apps/custom_hrms/custom_hrms/fixtures"
   if [ -d "$FIXTURE_PATH" ]; then
     mv "$FIXTURE_PATH" "$FIXTURE_PATH.backup" 2>/dev/null || true
   fi
   
-  if bench --site "$SITE_NAME" install-app custom-hrms; then
-    echo -e "${GREEN}✓ custom-hrms installed${NC}"
+  if bench --site "$SITE_NAME" install-app custom_hrms; then
+    echo -e "${GREEN}✓ custom_hrms installed${NC}"
   else
-    echo -e "${YELLOW}⚠ custom-hrms installation had issues${NC}"
+    echo -e "${YELLOW}⚠ custom_hrms installation had issues${NC}"
   fi
   
   if [ -d "$FIXTURE_PATH.backup" ]; then
@@ -322,17 +325,17 @@ if [ -d "apps/custom-hrms" ]; then
   fi
 fi
 
-if [ -d "apps/custom-asset-management" ]; then
-  echo "Installing custom-asset-management with fixture workaround..."
-  FIXTURE_PATH="apps/custom-asset-management/custom_asset_management/fixtures"
+if [ -d "apps/custom_asset_management" ]; then
+  echo "Installing custom_asset_management with fixture workaround..."
+  FIXTURE_PATH="apps/custom_asset_management/custom_asset_management/fixtures"
   if [ -d "$FIXTURE_PATH" ]; then
     mv "$FIXTURE_PATH" "$FIXTURE_PATH.backup" 2>/dev/null || true
   fi
   
-  if bench --site "$SITE_NAME" install-app custom-asset-management; then
-    echo -e "${GREEN}✓ custom-asset-management installed${NC}"
+  if bench --site "$SITE_NAME" install-app custom_asset_management; then
+    echo -e "${GREEN}✓ custom_asset_management installed${NC}"
   else
-    echo -e "${YELLOW}⚠ custom-asset-management installation had issues${NC}"
+    echo -e "${YELLOW}⚠ custom_asset_management installation had issues${NC}"
   fi
   
   if [ -d "$FIXTURE_PATH.backup" ]; then
@@ -340,11 +343,11 @@ if [ -d "apps/custom-asset-management" ]; then
   fi
 fi
 
-if [ -d "apps/custom-it-operations" ]; then
-  if bench --site "$SITE_NAME" install-app custom-it-operations; then
-    echo -e "${GREEN}✓ custom-it-operations installed${NC}"
+if [ -d "apps/custom_it_operations" ]; then
+  if bench --site "$SITE_NAME" install-app custom_it_operations; then
+    echo -e "${GREEN}✓ custom_it_operations installed${NC}"
   else
-    echo -e "${YELLOW}⚠ custom-it-operations installation had issues${NC}"
+    echo -e "${YELLOW}⚠ custom_it_operations installation had issues${NC}"
   fi
 fi
 
@@ -386,7 +389,7 @@ echo -e "${BLUE}Installed apps:${NC}"
 echo "  - frappe (core framework)"
 echo "  - erpnext (ERP system)"
 echo "  - hrms (HR module)"
-echo "  - custom-hrms (your custom HRMS)"
-echo "  - custom-asset-management (your custom asset management)"
-echo "  - custom-it-operations (your custom IT operations)"
+echo "  - custom_hrms (your custom HRMS)"
+echo "  - custom_asset_management (your custom asset management)"
+echo "  - custom_it_operations (your custom IT operations)"
 echo ""

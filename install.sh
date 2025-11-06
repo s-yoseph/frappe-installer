@@ -22,6 +22,7 @@ BENCH_NAME="frappe-bench"
 INSTALL_DIR="${HOME}/frappe-setup"
 SITE_NAME="mmcy.hrms"
 DB_PORT=3307
+REDIS_PORT=13000
 MYSQL_ROOT_PASS="root"
 ADMIN_PASS="admin"
 
@@ -44,6 +45,80 @@ echo -e "${BLUE}Installing Frappe (Fresh Start)...${NC}"
 sudo apt update -y
 sudo apt install -y python3-dev python3.12-venv python3-pip redis-server mariadb-server mariadb-client curl git build-essential nodejs jq
 sudo npm install -g yarn || true
+
+echo -e "${BLUE}Setting up Redis on port ${REDIS_PORT}...${NC}"
+sudo systemctl stop redis-server || true
+sleep 2
+
+sudo tee /etc/redis/redis.conf > /dev/null <<EOF
+port ${REDIS_PORT}
+bind 127.0.0.1
+timeout 0
+tcp-keepalive 300
+daemonize no
+supervised no
+pidfile /var/run/redis_${REDIS_PORT}.pid
+loglevel notice
+logfile ""
+databases 16
+save 900 1
+save 300 10
+save 60 10000
+stop-writes-on-bgsave-error yes
+rdbcompression yes
+rdbchecksum yes
+dbfilename dump.rdb
+dir /var/lib/redis
+slave-serve-stale-data yes
+slave-read-only yes
+repl-diskless-sync no
+repl-diskless-sync-delay 5
+repl-disable-tcp-nodelay no
+slave-priority 100
+appendonly no
+appendfilename "appendonly.aof"
+appendfsync everysec
+no-appendfsync-on-rewrite no
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+lua-time-limit 5000
+slowlog-log-slower-than 10000
+slowlog-max-len 128
+latency-monitor-threshold 0
+notify-keyspace-events ""
+hash-max-ziplist-entries 512
+hash-max-ziplist-value 64
+list-max-ziplist-size -2
+list-compress-depth 0
+set-max-intset-entries 512
+zset-max-ziplist-entries 128
+zset-max-ziplist-value 64
+hll-sparse-max-bytes 3000
+activerehashing yes
+client-output-buffer-limit normal 0 0 0
+client-output-buffer-limit slave 256mb 64mb 60
+client-output-buffer-limit pubsub 32mb 8mb 60
+hz 10
+aof-rewrite-incremental-fsync yes
+EOF
+
+sudo systemctl start redis-server
+sleep 4
+
+echo -e "${BLUE}Waiting for Redis to be ready on port ${REDIS_PORT}...${NC}"
+for i in {1..30}; do
+  if redis-cli -p ${REDIS_PORT} ping >/dev/null 2>&1; then
+    echo -e "${GREEN}✓ Redis is ready${NC}"
+    break
+  fi
+  if [ $i -eq 30 ]; then
+    die "Redis failed to start on port ${REDIS_PORT}"
+  fi
+  echo "Waiting for Redis... attempt $i/30"
+  sleep 1
+done
+
+echo -e "${GREEN}✓ Redis ready on port ${REDIS_PORT}${NC}"
 
 # Setup MariaDB
 echo -e "${BLUE}Setting up MariaDB...${NC}"
@@ -109,6 +184,9 @@ echo -e "${BLUE}Configuring bench...${NC}"
 bench config set-common-config -c db_host "'127.0.0.1'" || true
 bench config set-common-config -c db_port "${DB_PORT}" || true
 bench config set-common-config -c mariadb_root_password "'${MYSQL_ROOT_PASS}'" || true
+bench config set-common-config -c redis_cache "'redis://127.0.0.1:${REDIS_PORT}'" || true
+bench config set-common-config -c redis_queue "'redis://127.0.0.1:${REDIS_PORT}'" || true
+bench config set-common-config -c redis_socketio "'redis://127.0.0.1:${REDIS_PORT}'" || true
 
 echo -e "${BLUE}Fetching apps...${NC}"
 
@@ -172,6 +250,13 @@ bench new-site "$SITE_NAME" \
   --admin-password "${ADMIN_PASS}" || die "Failed to create site '${SITE_NAME}'"
 
 echo -e "${GREEN}✓ Site created${NC}"
+
+echo -e "${BLUE}Verifying Redis is accessible...${NC}"
+if ! redis-cli -p ${REDIS_PORT} ping >/dev/null 2>&1; then
+  echo -e "${YELLOW}⚠ Redis connection lost, restarting...${NC}"
+  sudo systemctl restart redis-server
+  sleep 4
+fi
 
 echo -e "${BLUE}Installing apps on site...${NC}"
 

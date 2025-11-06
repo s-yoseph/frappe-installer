@@ -48,6 +48,9 @@ sudo apt update -y
 sudo apt install -y python3-dev python3.12-venv python3-pip redis-server mariadb-server mariadb-client curl git build-essential nodejs jq
 sudo npm install -g yarn || true
 
+REDIS_CONFIG_DIR="${HOME}/.redis"
+mkdir -p "$REDIS_CONFIG_DIR"
+
 echo -e "${BLUE}Setting up Redis instances with standard Frappe ports...${NC}"
 sudo systemctl stop redis-server || true
 sleep 2
@@ -58,16 +61,15 @@ sudo fuser -k ${REDIS_QUEUE_PORT}/tcp 2>/dev/null || true
 sudo fuser -k ${REDIS_SOCKETIO_PORT}/tcp 2>/dev/null || true
 sleep 2
 
-# Configure Redis cache on port 11000
 echo -e "${BLUE}Configuring Redis cache on port ${REDIS_CACHE_PORT}...${NC}"
-sudo tee /etc/redis/redis-cache.conf > /dev/null <<EOF
+cat > "$REDIS_CONFIG_DIR/redis-cache.conf" <<EOF
 port ${REDIS_CACHE_PORT}
 bind 127.0.0.1
 timeout 0
 tcp-keepalive 300
 daemonize no
 supervised no
-pidfile /var/run/redis_${REDIS_CACHE_PORT}.pid
+pidfile ${REDIS_CONFIG_DIR}/redis-cache.pid
 loglevel notice
 logfile ""
 databases 16
@@ -78,20 +80,19 @@ stop-writes-on-bgsave-error yes
 rdbcompression yes
 rdbchecksum yes
 dbfilename dump-cache.rdb
-dir /var/lib/redis
+dir ${REDIS_CONFIG_DIR}
 appendonly no
 EOF
 
-# Configure Redis queue on port 12000
 echo -e "${BLUE}Configuring Redis queue on port ${REDIS_QUEUE_PORT}...${NC}"
-sudo tee /etc/redis/redis-queue.conf > /dev/null <<EOF
+cat > "$REDIS_CONFIG_DIR/redis-queue.conf" <<EOF
 port ${REDIS_QUEUE_PORT}
 bind 127.0.0.1
 timeout 0
 tcp-keepalive 300
 daemonize no
 supervised no
-pidfile /var/run/redis_${REDIS_QUEUE_PORT}.pid
+pidfile ${REDIS_CONFIG_DIR}/redis-queue.pid
 loglevel notice
 logfile ""
 databases 16
@@ -102,20 +103,19 @@ stop-writes-on-bgsave-error yes
 rdbcompression yes
 rdbchecksum yes
 dbfilename dump-queue.rdb
-dir /var/lib/redis
+dir ${REDIS_CONFIG_DIR}
 appendonly no
 EOF
 
-# Configure Redis socketio on port 13000
 echo -e "${BLUE}Configuring Redis socketio on port ${REDIS_SOCKETIO_PORT}...${NC}"
-sudo tee /etc/redis/redis-socketio.conf > /dev/null <<EOF
+cat > "$REDIS_CONFIG_DIR/redis-socketio.conf" <<EOF
 port ${REDIS_SOCKETIO_PORT}
 bind 127.0.0.1
 timeout 0
 tcp-keepalive 300
 daemonize no
 supervised no
-pidfile /var/run/redis_${REDIS_SOCKETIO_PORT}.pid
+pidfile ${REDIS_CONFIG_DIR}/redis-socketio.pid
 loglevel notice
 logfile ""
 databases 16
@@ -126,21 +126,20 @@ stop-writes-on-bgsave-error yes
 rdbcompression yes
 rdbchecksum yes
 dbfilename dump-socketio.rdb
-dir /var/lib/redis
+dir ${REDIS_CONFIG_DIR}
 appendonly no
 EOF
 
-# Start all three Redis instances
 echo -e "${BLUE}Starting Redis instances...${NC}"
-redis-server /etc/redis/redis-cache.conf &
+redis-server "$REDIS_CONFIG_DIR/redis-cache.conf" &
 REDIS_CACHE_PID=$!
 sleep 2
 
-redis-server /etc/redis/redis-queue.conf &
+redis-server "$REDIS_CONFIG_DIR/redis-queue.conf" &
 REDIS_QUEUE_PID=$!
 sleep 2
 
-redis-server /etc/redis/redis-socketio.conf &
+redis-server "$REDIS_CONFIG_DIR/redis-socketio.conf" &
 REDIS_SOCKETIO_PID=$!
 sleep 2
 

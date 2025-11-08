@@ -33,6 +33,12 @@ export PYTHONDONTWRITEBYTECODE=1
 export PYTHONUNBUFFERED=1
 export PATH="$HOME/.local/bin:$PATH"
 
+export GIT_TERMINAL_PROMPT=0
+export GIT_HTTP_CONNECTTIMEOUT=120
+export GIT_HTTP_LOWSPEEDLIMIT=1000
+export GIT_HTTP_LOWSPEEDTIME=120
+export GIT_CURL_VERBOSE=0
+
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 BLUE='\033[1;34m'
@@ -40,6 +46,33 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 die() { echo -e "${RED}ERROR: $*${NC}" >&2; exit 1; }
+
+retry_get_app() {
+  local app_name=$1
+  local branch=$2
+  local url=$3
+  local max_attempts=3
+  local attempt=1
+  
+  while [ $attempt -le $max_attempts ]; do
+    echo -e "${BLUE}[Attempt $attempt/$max_attempts] Fetching $app_name from branch $branch...${NC}"
+    
+    if bench get-app --branch "$branch" "$app_name" "$url" 2>&1; then
+      echo -e "${GREEN}✓ $app_name fetched successfully${NC}"
+      return 0
+    fi
+    
+    if [ $attempt -lt $max_attempts ]; then
+      echo -e "${YELLOW}⚠ $app_name fetch failed, retrying in 15 seconds...${NC}"
+      sleep 15
+    fi
+    
+    attempt=$((attempt + 1))
+  done
+  
+  echo -e "${YELLOW}⚠ Failed to fetch $app_name after $max_attempts attempts${NC}"
+  return 1
+}
 
 echo -e "${BLUE}Installing Frappe (Fresh Start)...${NC}"
 
@@ -247,11 +280,11 @@ bench config set-common-config -c redis_socketio "'redis://127.0.0.1:${REDIS_SOC
 echo -e "${BLUE}Fetching apps...${NC}"
 
 echo "Fetching ERPNext from branch ${ERPNEXT_BRANCH}..."
-bench get-app --branch "$ERPNEXT_BRANCH" erpnext https://github.com/frappe/erpnext || die "Failed to get ERPNext"
+retry_get_app "erpnext" "$ERPNEXT_BRANCH" "https://github.com/frappe/erpnext" || die "Failed to get ERPNext after retries"
 echo -e "${GREEN}✓ ERPNext fetched${NC}"
 
 echo "Fetching HRMS from branch ${HRMS_BRANCH}..."
-bench get-app --branch "$HRMS_BRANCH" hrms https://github.com/frappe/hrms || die "Failed to get HRMS"
+retry_get_app "hrms" "$HRMS_BRANCH" "https://github.com/frappe/hrms" || die "Failed to get HRMS after retries"
 echo -e "${GREEN}✓ HRMS fetched${NC}"
 
 if [ -z "${GITHUB_TOKEN}" ]; then
@@ -260,26 +293,11 @@ if [ -z "${GITHUB_TOKEN}" ]; then
 else
   echo -e "${GREEN}✓ GitHub token received${NC}"
 
-  echo "Fetching custom-hrms from branch ${CUSTOM_BRANCH}..."
-  if GIT_TERMINAL_PROMPT=0 bench get-app --branch "$CUSTOM_BRANCH" custom-hrms "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-hrms.git" 2>&1; then
-    echo -e "${GREEN}✓ custom-hrms fetched${NC}"
-  else
-    echo -e "${YELLOW}⚠ custom-hrms fetch failed${NC}"
-  fi
+  retry_get_app "custom-hrms" "$CUSTOM_BRANCH" "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-hrms.git" || echo -e "${YELLOW}⚠ custom-hrms not available${NC}"
 
-  echo "Fetching custom-asset-management from branch ${CUSTOM_BRANCH}..."
-  if GIT_TERMINAL_PROMPT=0 bench get-app --branch "$CUSTOM_BRANCH" custom-asset-management "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-asset-management.git" 2>&1; then
-    echo -e "${GREEN}✓ custom-asset-management fetched${NC}"
-  else
-    echo -e "${YELLOW}⚠ custom-asset-management fetch failed${NC}"
-  fi
+  retry_get_app "custom-asset-management" "$CUSTOM_BRANCH" "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-asset-management.git" || echo -e "${YELLOW}⚠ custom-asset-management not available${NC}"
 
-  echo "Fetching custom-it-operations from branch ${CUSTOM_BRANCH}..."
-  if GIT_TERMINAL_PROMPT=0 bench get-app --branch "$CUSTOM_BRANCH" custom-it-operations "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-it-operations.git" 2>&1; then
-    echo -e "${GREEN}✓ custom-it-operations fetched${NC}"
-  else
-    echo -e "${YELLOW}⚠ custom-it-operations fetch failed${NC}"
-  fi
+  retry_get_app "custom-it-operations" "$CUSTOM_BRANCH" "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-it-operations.git" || echo -e "${YELLOW}⚠ custom-it-operations not available${NC}"
 fi
 
 echo -e "${GREEN}✓ All apps fetched${NC}"

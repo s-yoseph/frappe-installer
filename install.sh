@@ -366,20 +366,20 @@ echo -e "${GREEN}✓ HRMS installed${NC}"
 
 if [ -d "apps/custom-hrms" ]; then
   echo "Installing custom-hrms..."
-  bench --site "$SITE_NAME" install-app custom-hrms || echo -e "${YELLOW}⚠ custom-hrms installation had issues${NC}"
-  echo -e "${GREEN}✓ custom-hrms installed${NC}"
+  bench --site "$SITE_NAME" install-app custom_hrms || echo -e "${YELLOW}⚠ custom_hrms installation had issues${NC}   custom_hrms installation may require migration later${NC}"
+  echo -e "${GREEN}✓ custom_hrms installed${NC}"
 fi
 
 if [ -d "apps/custom-asset-management" ]; then
   echo "Installing custom-asset-management..."
-  bench --site "$SITE_NAME" install-app custom-asset-management || echo -e "${YELLOW}⚠ custom-asset-management installation had issues${NC}"
-  echo -e "${GREEN}✓ custom-asset-management installed${NC}"
+  bench --site "$SITE_NAME" install-app custom_asset_management || echo -e "${YELLOW}⚠ custom_asset_management installation had issues${NC}  mmcy_asset_management installation may require migration later${NC}"
+  echo -e "${GREEN}✓ custom_asset_management installed${NC}"
 fi
 
 if [ -d "apps/custom-it-operations" ]; then
   echo "Installing custom-it-operations..."
-  bench --site "$SITE_NAME" install-app custom-it-operations || echo -e "${YELLOW}⚠ custom-it-operations installation had issues${NC}"
-  echo -e "${GREEN}✓ custom-it-operations installed${NC}"
+  bench --site "$SITE_NAME" install-app custom_it_operations || echo -e "${YELLOW}⚠ custom_it_operations installation had issues${NC}  mmcy_it_operations installation may require migration later${NC}" 
+  echo -e "${GREEN}✓ custom_it_operations installed${NC}"
 fi
 
 echo -e "${BLUE}Running migrate...${NC}"

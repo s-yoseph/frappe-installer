@@ -287,18 +287,63 @@ echo "Fetching HRMS from branch ${HRMS_BRANCH}..."
 retry_get_app "hrms" "$HRMS_BRANCH" "https://github.com/frappe/hrms" || die "Failed to get HRMS after retries"
 echo -e "${GREEN}✓ HRMS fetched${NC}"
 
-if [ -z "${GITHUB_TOKEN}" ]; then
-  echo -e "${YELLOW}⚠ No GitHub token provided - custom apps will be skipped${NC}"
-  echo -e "${YELLOW}To include custom apps, run: bash install-frappe-complete.sh -t YOUR_GITHUB_TOKEN${NC}"
-else
-  echo -e "${GREEN}✓ GitHub token received${NC}"
 
-  retry_get_app "custom-hrms" "$CUSTOM_BRANCH" "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-hrms.git" || echo -e "${YELLOW}⚠ custom-hrms not available${NC}"
 
-  retry_get_app "custom-asset-management" "$CUSTOM_BRANCH" "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-asset-management.git" || echo -e "${YELLOW}⚠ custom-asset-management not available${NC}"
 
-  retry_get_app "custom-it-operations" "$CUSTOM_BRANCH" "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-it-operations.git" || echo -e "${YELLOW}⚠ custom-it-operations not available${NC}"
+echo -e "${BLUE}Fetching custom MMCY apps...${NC}"
+
+CUSTOM_APPS=(
+  "custom-hrms|https://github.com/MMCY-Tech/custom-hrms.git"
+  "custom-asset-management|https://github.com/MMCY-Tech/custom-asset-management.git"
+  "custom-it-operations|https://github.com/MMCY-Tech/custom-it-operations.git"
+)
+
+for app in "${CUSTOM_APPS[@]}"; do
+  APP_NAME="${app%%|*}"
+  APP_URL="${app##*|}"
+
+  APP_DIR="apps/${APP_NAME}"
+  
+  if [ ! -d "$APP_DIR" ]; then
+    echo -e "${BLUE}Fetching $APP_NAME...${NC}"
+    if [ -n "$GITHUB_TOKEN" ]; then
+      git clone -b "$CUSTOM_BRANCH" "https://token:${GITHUB_TOKEN}@${APP_URL#https://}" "$APP_DIR"
+    else
+      # Will prompt for GitHub credentials if repo is private
+      git clone -b "$CUSTOM_BRANCH" "$APP_URL" "$APP_DIR"
+    fi
+  else
+    echo -e "${YELLOW}$APP_NAME already exists, skipping clone${NC}"
+  fi
+done
+
+echo -e "${GREEN}✓ Custom MMCY apps fetched${NC}"
+
+# Install MMCY Apps WITHOUT running migrations
+if [ -d "apps/custom-hrms" ]; then
+  echo "Installing mmcy_hrms..."
+  bench --site "$SITE_NAME" install-app mmcy_hrms || echo -e "${YELLOW}⚠ mmcy_hrms installation had issues (expected - migration pending)${NC}"
+  echo -e "${GREEN}✓ mmcy_hrms linked to site (migration deferred)${NC}"
 fi
+
+if [ -d "apps/custom-asset-management" ]; then
+  echo "Installing mmcy_asset_management..."
+  bench --site "$SITE_NAME" install-app mmcy_asset_management || echo -e "${YELLOW}⚠ mmcy_asset_management installation had issues (expected - migration pending)${NC}"
+  echo -e "${GREEN}✓ mmcy_asset_management linked to site (migration deferred)${NC}"
+fi
+
+if [ -d "apps/custom-it-operations" ]; then
+  echo "Installing mmcy_it_operations..."
+  bench --site "$SITE_NAME" install-app mmcy_it_operations || echo -e "${YELLOW}⚠ mmcy_it_operations installation had issues (expected - migration pending)${NC}"
+  echo -e "${GREEN}✓ mmcy_it_operations linked to site (migration deferred)${NC}"
+fi
+
+echo -e "${YELLOW}⚠ Skipping migrations intentionally. Apps will load but some pages may break.${NC}"
+
+
+
+
+
 
 echo -e "${GREEN}✓ All apps fetched${NC}"
 

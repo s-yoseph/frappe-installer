@@ -312,17 +312,18 @@ FLUSH PRIVILEGES;
 SQL
 
 echo "Removing orphaned databases..."
-mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" <<SQL 2>/dev/null || true
+TEMP_DROP_FILE=$(mktemp)
+trap "rm -f '$TEMP_DROP_FILE'" EXIT
+
+mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" 2>/dev/null <<SQL > "$TEMP_DROP_FILE" || true
 SELECT CONCAT('DROP DATABASE IF EXISTS \`', schema_name, '\`;') 
 FROM information_schema.schemata 
 WHERE schema_name LIKE '\_%' 
-AND schema_name NOT IN ('_mysql', '_performance_schema', '_information_schema')
-INTO OUTFILE '/tmp/drop_dbs.sql';
+AND schema_name NOT IN ('_mysql', '_performance_schema', '_information_schema');
 SQL
 
-if [ -f /tmp/drop_dbs.sql ]; then
-  mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" < /tmp/drop_dbs.sql 2>/dev/null || true
-  rm -f /tmp/drop_dbs.sql
+if [ -s "$TEMP_DROP_FILE" ]; then
+  mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" < "$TEMP_DROP_FILE" 2>/dev/null || true
 fi
 
 rm -rf "sites/${SITE_NAME}" 2>/dev/null || true
@@ -402,6 +403,9 @@ worker: bench worker default
 watch: bench watch
 EOF
 echo -e "${GREEN}✓ Procfile configured${NC}"
+
+echo -e "${BLUE}Restarting bench services...${NC}"
+bench restart || echo -e "${YELLOW}⚠ Bench will restart on next 'bench start'${NC}"
 
 echo -e "${BLUE}Fixing company abbreviation for MMCYTech...${NC}"
 bench --site "$SITE_NAME" execute "

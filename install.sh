@@ -399,7 +399,7 @@ redis_socketio: redis-server ${REDIS_CONFIG_DIR}/redis-socketio.conf
 web: bench serve --port 8000
 socketio: node apps/frappe/socketio.js
 schedule: bench schedule
-worker: bench worker default
+worker: bench worker
 watch: bench watch
 EOF
 echo -e "${GREEN}✓ Procfile configured${NC}"
@@ -409,16 +409,15 @@ bench restart || echo -e "${YELLOW}⚠ Bench will restart on next 'bench start'$
 
 echo -e "${BLUE}Fixing company abbreviation for MMCYTech...${NC}"
 bench --site "$SITE_NAME" execute "
-from frappe.client import set_value
+import frappe
+frappe.connect()
 try:
-    company = frappe.get_doc('Company', 'MMCYTech')
-    if company:
-        set_value('Company', 'MMCYTech', 'abbr', 'MT')
-        frappe.db.commit()
-        print('Company abbreviation updated to MT')
+    frappe.db.set_value('Company', 'MMCYTech', 'abbr', 'MT', update_modified=False)
+    frappe.db.commit()
+    print('✓ Company abbreviation set to MT')
 except Exception as e:
-    print(f'Note: Company setup will be done on first login - {str(e)}')
-" || echo -e "${YELLOW}⚠ Company abbreviation will be set on first login${NC}"
+    print(f'Company abbreviation will be set on first login: {str(e)}')
+" || echo -e "${YELLOW}⚠ Company abbreviation will need manual setup${NC}"
 
 echo -e "${BLUE}Verifying installed apps...${NC}"
 bench --site "$SITE_NAME" list-apps

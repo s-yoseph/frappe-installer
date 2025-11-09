@@ -364,26 +364,27 @@ echo "Installing HRMS..."
 bench --site "$SITE_NAME" install-app hrms || die "Failed to install HRMS"
 echo -e "${GREEN}✓ HRMS installed${NC}"
 
+# Install MMCY Apps WITHOUT running migrations
 if [ -d "apps/custom-hrms" ]; then
-  echo "Installing custom-hrms..."
-  bench --site "$SITE_NAME" install-app mmcy_hrms || echo -e "${YELLOW}⚠ mmcy_hrms installation had issues${NC}   mmcy_hrms installation may require migration later${NC}"
-  echo -e "${GREEN}✓ custom_hrms installed${NC}"
+  echo "Installing mmcy_hrms..."
+  bench --site "$SITE_NAME" install-app mmcy_hrms || echo -e "${YELLOW}⚠ mmcy_hrms installation had issues (expected - migration pending)${NC}"
+  echo -e "${GREEN}✓ mmcy_hrms linked to site (migration deferred)${NC}"
 fi
 
 if [ -d "apps/custom-asset-management" ]; then
-  echo "Installing custom-asset-management..."
-  bench --site "$SITE_NAME" install-app mmcy_asset_management || echo -e "${YELLOW}⚠ mmcy_asset_management installation had issues${NC}  mmcy_asset_management installation may require migration later${NC}"
-  echo -e "${GREEN}✓ custom_asset_management installed${NC}"
+  echo "Installing mmcy_asset_management..."
+  bench --site "$SITE_NAME" install-app mmcy_asset_management || echo -e "${YELLOW}⚠ mmcy_asset_management installation had issues (expected - migration pending)${NC}"
+  echo -e "${GREEN}✓ mmcy_asset_management linked to site (migration deferred)${NC}"
 fi
 
 if [ -d "apps/custom-it-operations" ]; then
-  echo "Installing custom-it-operations..."
-  bench --site "$SITE_NAME" install-app mmcy_it_operations || echo -e "${YELLOW}⚠ mmcy_it_operations installation had issues${NC}  mmcy_it_operations installation may require migration later${NC}" 
-  echo -e "${GREEN}✓ custom_it_operations installed${NC}"
+  echo "Installing mmcy_it_operations..."
+  bench --site "$SITE_NAME" install-app mmcy_it_operations || echo -e "${YELLOW}⚠ mmcy_it_operations installation had issues (expected - migration pending)${NC}"
+  echo -e "${GREEN}✓ mmcy_it_operations linked to site (migration deferred)${NC}"
 fi
 
-echo -e "${BLUE}Running migrate...${NC}"
-bench --site "$SITE_NAME" migrate || true
+# DO NOT RUN MIGRATIONS NOW
+echo -e "${YELLOW}⚠ Skipping migrations intentionally. Apps will load but some pages may break.${NC}"
 
 echo -e "${BLUE}Building assets and clearing cache...${NC}"
 bench build || true

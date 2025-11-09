@@ -48,8 +48,21 @@ This downloads and executes install.sh, installing all apps (~5–15 minutes).
 ## Post-Installation
 
 Verify installed apps:
-  ```bash
-  bench --site mmcy.hrms list-apps
-  
-  ```bash  
-  frappe, erpnext, hrms, mmcy_hrms, mmcy_asset_management, mmcy_it_operations
+
+
+
+ 
+ # Kill current processes
+pkill -f "bench start"
+pkill -f redis
+# Clear any locks
+rm -f /tmp/*.sock
+# Start fresh
+bench start
+ 
+ 
+bench --site "$SITE_NAME" install-app mmcy_hrms
+bench --site "$SITE_NAME" install-app mmcy_asset_management
+bench --site "$SITE_NAME" install-app mmcy_it_operations
+
+ 

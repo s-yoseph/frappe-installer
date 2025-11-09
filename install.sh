@@ -311,9 +311,25 @@ DROP DATABASE IF EXISTS \`_afd6259a990fe66d\`;
 FLUSH PRIVILEGES;
 SQL
 
+echo "Removing orphaned databases..."
+mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" <<SQL 2>/dev/null || true
+SELECT CONCAT('DROP DATABASE IF EXISTS \`', schema_name, '\`;') 
+FROM information_schema.schemata 
+WHERE schema_name LIKE '\_%' 
+AND schema_name NOT IN ('_mysql', '_performance_schema', '_information_schema')
+INTO OUTFILE '/tmp/drop_dbs.sql';
+SQL
+
+if [ -f /tmp/drop_dbs.sql ]; then
+  mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" < /tmp/drop_dbs.sql 2>/dev/null || true
+  rm -f /tmp/drop_dbs.sql
+fi
+
 rm -rf "sites/${SITE_NAME}" 2>/dev/null || true
 
 bench drop-site "$SITE_NAME" --no-backup --force --db-root-username root --db-root-password "${MYSQL_ROOT_PASS}" 2>&1 | tail -3 || true
+
+sleep 3
 
 bench new-site "$SITE_NAME" \
   --db-type mariadb \

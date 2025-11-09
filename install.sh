@@ -307,11 +307,12 @@ echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 echo "Cleaning up any leftover databases..."
 mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" <<SQL 2>/dev/null || true
 DROP DATABASE IF EXISTS \`$(echo ${SITE_NAME} | sed 's/\./_/g')\`;
+DROP DATABASE IF EXISTS \`_9dd2166bc4fc2357\`;
 DROP DATABASE IF EXISTS \`_afd6259a990fe66d\`;
 FLUSH PRIVILEGES;
 SQL
 
-echo "Removing orphaned databases..."
+echo "Removing all orphaned databases (starting with underscore)..."
 TEMP_DROP_FILE=$(mktemp)
 trap "rm -f '$TEMP_DROP_FILE'" EXIT
 
@@ -327,8 +328,6 @@ if [ -s "$TEMP_DROP_FILE" ]; then
 fi
 
 rm -rf "sites/${SITE_NAME}" 2>/dev/null || true
-
-bench drop-site "$SITE_NAME" --no-backup --force --db-root-username root --db-root-password "${MYSQL_ROOT_PASS}" 2>&1 | tail -3 || true
 
 sleep 3
 

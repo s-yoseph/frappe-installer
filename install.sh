@@ -1,7 +1,33 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 
+# ==========================================
+# CONFIGURATION
+# ==========================================
 GITHUB_TOKEN=""
+FRAPPE_BRANCH="version-15"
+ERPNEXT_BRANCH="version-15"
+HRMS_BRANCH="version-15"
+CUSTOM_BRANCH="develop"
+
+BENCH_NAME="frappe-bench"
+INSTALL_DIR="${HOME}/frappe-setup"
+SITE_NAME="hrms.mmcy"
+
+# Ports
+DB_PORT=3307
+REDIS_CACHE_PORT=11000
+REDIS_QUEUE_PORT=12000
+REDIS_SOCKETIO_PORT=13000
+WEB_PORT=8000
+
+# Database Credentials
+MYSQL_ROOT_PASS="root"
+ADMIN_PASS="admin"
+
+# ==========================================
+# ARGUMENT PARSING
+# ==========================================
 while [[ $# -gt 0 ]]; do
   case $1 in
     -t|--token)
@@ -14,30 +40,17 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-FRAPPE_BRANCH="version-15"
-ERPNEXT_BRANCH="version-15"
-HRMS_BRANCH="version-15"
-CUSTOM_BRANCH="develop"
-BENCH_NAME="frappe-bench"
-INSTALL_DIR="${HOME}/frappe-setup"
-SITE_NAME="hrms.mmcy"
-DB_PORT=3307
-REDIS_CACHE_PORT=11000
-REDIS_QUEUE_PORT=12000
-REDIS_SOCKETIO_PORT=13000
-MYSQL_ROOT_PASS="root"
-ADMIN_PASS="admin"
+# ==========================================
+# OS DETECTION & HELPER FUNCTIONS
+# ==========================================
+OS_TYPE=$(uname -s)
+case "$OS_TYPE" in
+    Linux*)     OS_NAME="Linux" ;;
+    Darwin*)    OS_NAME="Mac" ;;
+    *)          echo "Unknown OS: $OS_TYPE"; exit 1 ;;
+esac
 
-export PYTHONBREAKPOINT=0
-export PYTHONDONTWRITEBYTECODE=1
-export PYTHONUNBUFFERED=1
-export PATH="$HOME/.local/bin:$PATH"
-
-export GIT_TERMINAL_PROMPT=0
-export GIT_HTTP_CONNECTTIMEOUT=120
-export GIT_HTTP_LOWSPEEDLIMIT=1000
-export GIT_HTTP_LOWSPEEDTIME=120
-export GIT_CURL_VERBOSE=0
+echo "Detected OS: $OS_NAME"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -45,410 +58,302 @@ BLUE='\033[1;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-die() { echo -e "${RED}ERROR: $*${NC}" >&2; exit 1; }
+log() { echo -e "${BLUE}[INFO] $1${NC}"; }
+success() { echo -e "${GREEN}[SUCCESS] $1${NC}"; }
+warn() { echo -e "${YELLOW}[WARN] $1${NC}"; }
+error() { echo -e "${RED}[ERROR] $1${NC}"; exit 1; }
 
-retry_get_app() {
-  local app_name=$1
-  local branch=$2
-  local url=$3
-  local max_attempts=3
-  local attempt=1
-  
-  while [ $attempt -le $max_attempts ]; do
-    echo -e "${BLUE}[Attempt $attempt/$max_attempts] Fetching $app_name from branch $branch...${NC}"
-    
-    if bench get-app --branch "$branch" "$app_name" "$url" 2>&1; then
-      echo -e "${GREEN}✓ $app_name fetched successfully${NC}"
-      return 0
-    fi
-    
-    if [ $attempt -lt $max_attempts ]; then
-      echo -e "${YELLOW}⚠ $app_name fetch failed, retrying in 15 seconds...${NC}"
-      sleep 15
-    fi
-    
-    attempt=$((attempt + 1))
-  done
-  
-  echo -e "${YELLOW}⚠ Failed to fetch $app_name after $max_attempts attempts${NC}"
-  return 1
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
 }
 
-echo -e "${BLUE}Installing Frappe (Fresh Start)...${NC}"
+# ==========================================
+# SYSTEM DEPENDENCIES
+# ==========================================
+install_dependencies() {
+    log "Installing System Dependencies..."
 
-# Install dependencies
-sudo apt update -y
-sudo apt install -y python3-dev python3.12-venv python3-pip redis-server mariadb-server mariadb-client curl git build-essential nodejs jq
-sudo npm install -g yarn || true
+    if [ "$OS_NAME" == "Linux" ]; then
+        # Ubuntu/Debian/WSL
+        sudo apt-get update -y
+        sudo apt-get install -y git python3-dev python3-pip python3-venv redis-server software-properties-common mariadb-server mariadb-client xvfb libfontconfig wkhtmltopdf curl build-essential nodejs npm
 
-echo -e "${BLUE}Aggressively clearing ports...${NC}"
-sudo pkill -9 -f redis-server 2>/dev/null || true
-sudo lsof -i :${REDIS_CACHE_PORT} -t 2>/dev/null | xargs -r sudo kill -9 || true
-sudo lsof -i :${REDIS_QUEUE_PORT} -t 2>/dev/null | xargs -r sudo kill -9 || true
-sudo lsof -i :${REDIS_SOCKETIO_PORT} -t 2>/dev/null | xargs -r sudo kill -9 || true
-sleep 3
+        # Install Yarn
+        if ! command_exists yarn; then
+            sudo npm install -g yarn
+        fi
 
-REDIS_CONFIG_DIR="${HOME}/.redis"
-mkdir -p "$REDIS_CONFIG_DIR"
+    elif [ "$OS_NAME" == "Mac" ]; then
+        # macOS
+        if ! command_exists brew; then
+            error "Homebrew is not installed. Please install it first: https://brew.sh/"
+        fi
+        
+        log "Updating Homebrew..."
+        brew update
 
-echo -e "${BLUE}Setting up Redis instances with standard Frappe ports...${NC}"
-sudo systemctl stop redis-server || true
-sleep 2
+        brew install python@3.11 git redis mariadb node wkhtmltopdf
+        brew install yarn
+    fi
+    success "Dependencies installed."
+}
 
-# Stop any existing Redis instances on our ports
-sudo fuser -k ${REDIS_CACHE_PORT}/tcp 2>/dev/null || true
-sudo fuser -k ${REDIS_QUEUE_PORT}/tcp 2>/dev/null || true
-sudo fuser -k ${REDIS_SOCKETIO_PORT}/tcp 2>/dev/null || true
-sleep 2
+# ==========================================
+# MARIADB CONFIGURATION
+# ==========================================
+configure_mariadb() {
+    log "Configuring MariaDB..."
 
-echo -e "${BLUE}Configuring Redis cache on port ${REDIS_CACHE_PORT}...${NC}"
-cat > "$REDIS_CONFIG_DIR/redis-cache.conf" <<EOF
-port ${REDIS_CACHE_PORT}
-bind 127.0.0.1
-timeout 0
-tcp-keepalive 300
-daemonize no
-supervised no
-pidfile ${REDIS_CONFIG_DIR}/redis-cache.pid
-loglevel notice
-logfile ""
-databases 16
-save 900 1
-save 300 10
-save 60 10000
-stop-writes-on-bgsave-error yes
-rdbcompression yes
-rdbchecksum yes
-dbfilename dump-cache.rdb
-dir ${REDIS_CONFIG_DIR}
-appendonly no
-EOF
-
-echo -e "${BLUE}Configuring Redis queue on port ${REDIS_QUEUE_PORT}...${NC}"
-cat > "$REDIS_CONFIG_DIR/redis-queue.conf" <<EOF
-port ${REDIS_QUEUE_PORT}
-bind 127.0.0.1
-timeout 0
-tcp-keepalive 300
-daemonize no
-supervised no
-pidfile ${REDIS_CONFIG_DIR}/redis-queue.pid
-loglevel notice
-logfile ""
-databases 16
-save 900 1
-save 300 10
-save 60 10000
-stop-writes-on-bgsave-error yes
-rdbcompression yes
-rdbchecksum yes
-dbfilename dump-queue.rdb
-dir ${REDIS_CONFIG_DIR}
-appendonly no
-EOF
-
-echo -e "${BLUE}Configuring Redis socketio on port ${REDIS_SOCKETIO_PORT}...${NC}"
-cat > "$REDIS_CONFIG_DIR/redis-socketio.conf" <<EOF
-port ${REDIS_SOCKETIO_PORT}
-bind 127.0.0.1
-timeout 0
-tcp-keepalive 300
-daemonize no
-supervised no
-pidfile ${REDIS_CONFIG_DIR}/redis-socketio.pid
-loglevel notice
-logfile ""
-databases 16
-save 900 1
-save 300 10
-save 60 10000
-stop-writes-on-bgsave-error yes
-rdbcompression yes
-rdbchecksum yes
-dbfilename dump-socketio.rdb
-dir ${REDIS_CONFIG_DIR}
-appendonly no
-EOF
-
-echo -e "${BLUE}Starting Redis instances...${NC}"
-redis-server "$REDIS_CONFIG_DIR/redis-cache.conf" &
-REDIS_CACHE_PID=$!
-sleep 2
-
-redis-server "$REDIS_CONFIG_DIR/redis-queue.conf" &
-REDIS_QUEUE_PID=$!
-sleep 2
-
-redis-server "$REDIS_CONFIG_DIR/redis-socketio.conf" &
-REDIS_SOCKETIO_PID=$!
-sleep 2
-
-# Verify all Redis instances are running
-echo -e "${BLUE}Verifying Redis instances...${NC}"
-for i in {1..30}; do
-  CACHE_OK=false
-  QUEUE_OK=false
-  SOCKETIO_OK=false
-  
-  redis-cli -p ${REDIS_CACHE_PORT} ping >/dev/null 2>&1 && CACHE_OK=true || true
-  redis-cli -p ${REDIS_QUEUE_PORT} ping >/dev/null 2>&1 && QUEUE_OK=true || true
-  redis-cli -p ${REDIS_SOCKETIO_PORT} ping >/dev/null 2>&1 && SOCKETIO_OK=true || true
-  
-  if [ "$CACHE_OK" = true ] && [ "$QUEUE_OK" = true ] && [ "$SOCKETIO_OK" = true ]; then
-    echo -e "${GREEN}✓ All Redis instances are ready${NC}"
-    break
-  fi
-  
-  if [ $i -eq 30 ]; then
-    die "Redis instances failed to start properly"
-  fi
-  
-  echo "Waiting for Redis instances... attempt $i/30"
-  sleep 1
-done
-
-echo -e "${GREEN}✓ Redis ready on standard Frappe ports${NC}"
-
-# Setup MariaDB
-echo -e "${BLUE}Setting up MariaDB...${NC}"
-sudo systemctl stop mariadb || true
-sleep 2
-
-sudo tee /etc/mysql/mariadb.conf.d/99-custom.cnf > /dev/null <<EOF
-[mysqld]
-port = ${DB_PORT}
+    CONFIG_CONTENT="[mysqld]
+character-set-client-handshake = FALSE
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_ci
 bind-address = 127.0.0.1
 innodb_buffer_pool_size = 256M
-skip-external-locking
+innodb_file_per_table = 1
+innodb_flush_log_at_trx_commit = 1
+innodb_flush_method = O_DIRECT
+innodb_log_buffer_size = 8M
+innodb_log_file_size = 100M
+max_allowed_packet = 64M
+port = ${DB_PORT}
+"
+
+    if [ "$OS_NAME" == "Linux" ]; then
+        echo "$CONFIG_CONTENT" | sudo tee /etc/mysql/mariadb.conf.d/99-frappe.cnf > /dev/null
+        sudo service mariadb restart
+    elif [ "$OS_NAME" == "Mac" ]; then
+        # Brew MariaDB config location usually in /opt/homebrew/etc/my.cnf.d/
+        CONFIG_DIR="$(brew --prefix)/etc/my.cnf.d"
+        mkdir -p "$CONFIG_DIR"
+        echo "$CONFIG_CONTENT" > "$CONFIG_DIR/99-frappe.cnf"
+        brew services restart mariadb
+    fi
+    
+    # Wait for DB to start
+    sleep 5
+
+    log "Securing MariaDB..."
+    # Attempt to set root password. Use sudo for Linux socket auth, or standard login for Mac.
+    if [ "$OS_NAME" == "Linux" ]; then
+        sudo mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}'; FLUSH PRIVILEGES;" || warn "Could not set root password (maybe already set?)"
+    else
+        mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}'; FLUSH PRIVILEGES;" || warn "Could not set root password (maybe already set?)"
+    fi
+    success "MariaDB Configured."
+}
+
+# ==========================================
+# REDIS CONFIGURATION (USER LEVEL)
+# ==========================================
+configure_redis() {
+    log "Configuring Local Redis Instances..."
+    
+    REDIS_DIR="$HOME/.redis_frappe"
+    mkdir -p "$REDIS_DIR"
+
+    # Stop existing if any
+    pkill -f "redis-server.*$REDIS_CACHE_PORT" || true
+    pkill -f "redis-server.*$REDIS_QUEUE_PORT" || true
+    pkill -f "redis-server.*$REDIS_SOCKETIO_PORT" || true
+
+    # Helper to generate config
+    create_redis_conf() {
+        local port=$1
+        local name=$2
+        cat > "$REDIS_DIR/$name.conf" <<EOF
+port $port
+bind 127.0.0.1
+daemonize yes
+pidfile $REDIS_DIR/$name.pid
+dir $REDIS_DIR
+dbfilename $name.rdb
+save ""
+appendonly no
 EOF
+        redis-server "$REDIS_DIR/$name.conf"
+    }
 
-sudo systemctl daemon-reload
-sudo systemctl set-environment MYSQLD_OPTS="--skip-grant-tables"
-sudo systemctl start mariadb
-sleep 4
+    create_redis_conf $REDIS_CACHE_PORT "redis-cache"
+    create_redis_conf $REDIS_QUEUE_PORT "redis-queue"
+    create_redis_conf $REDIS_SOCKETIO_PORT "redis-socketio"
 
-mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root <<SQL || die "Failed to set MariaDB root password"
-FLUSH PRIVILEGES;
-ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
-ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
-FLUSH PRIVILEGES;
-SQL
+    success "Redis instances started on ports $REDIS_CACHE_PORT, $REDIS_QUEUE_PORT, $REDIS_SOCKETIO_PORT."
+}
 
-sudo systemctl stop mariadb
-sleep 2
-sudo systemctl unset-environment MYSQLD_OPTS
-sudo systemctl start mariadb
-sleep 4
+# ==========================================
+# BENCH SETUP
+# ==========================================
+setup_bench() {
+    # Install Bench CLI
+    if ! command_exists bench; then
+        log "Installing Frappe Bench CLI..."
+        # Use pip3 with break-system-packages if on newer Linux/Mac, or pipx
+        python3 -m pip install --user frappe-bench --break-system-packages 2>/dev/null || python3 -m pip install --user frappe-bench
+    fi
 
-if ! mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT 1;" >/dev/null 2>&1; then
-  die "MariaDB connection failed - verify port ${DB_PORT} is accessible"
-fi
+    # Add local bin to PATH for this session
+    export PATH=$PATH:$HOME/.local/bin
 
-echo -e "${GREEN}✓ MariaDB ready on port ${DB_PORT}${NC}"
+    # Clean install dir
+    if [ -d "$INSTALL_DIR" ]; then
+        warn "Directory $INSTALL_DIR exists. Backing up..."
+        mv "$INSTALL_DIR" "${INSTALL_DIR}_backup_$(date +%s)"
+    fi
 
-# Install bench
-if ! command -v bench >/dev/null 2>&1; then
-  echo -e "${BLUE}Installing frappe-bench...${NC}"
-  python3 -m pip install --user frappe-bench || die "Failed to install frappe-bench"
-fi
+    mkdir -p "$INSTALL_DIR"
+    cd "$INSTALL_DIR"
 
-echo -e "${BLUE}Cleaning up old installation...${NC}"
-if [ -d "$INSTALL_DIR/$BENCH_NAME" ]; then
-  echo "Removing old bench directory..."
-  sudo chmod -R u+w "$INSTALL_DIR/$BENCH_NAME" 2>/dev/null || true
-  sudo rm -rf "$INSTALL_DIR/$BENCH_NAME" || die "Failed to remove old bench directory"
-  echo -e "${GREEN}Old bench removed${NC}"
-fi
+    log "Initializing Bench (Frappe $FRAPPE_BRANCH)..."
+    
+    # Init command
+    bench init "$BENCH_NAME" \
+        --frappe-branch "$FRAPPE_BRANCH" \
+        --python python3 \
+        --no-procfile \
+        --no-backups \
+        --verbose
 
-# Initialize bench fresh
-mkdir -p "$INSTALL_DIR"
-cd "$INSTALL_DIR"
+    cd "$BENCH_NAME"
 
-echo -e "${BLUE}Initializing fresh bench...${NC}"
-bench init "$BENCH_NAME" --frappe-branch "$FRAPPE_BRANCH" --python python3 || die "Failed to initialize bench"
+    # Config Bench for Custom Ports
+    bench config set-common-config -c db_host "127.0.0.1"
+    bench config set-common-config -c db_port "$DB_PORT"
+    bench config set-common-config -c redis_cache "redis://127.0.0.1:$REDIS_CACHE_PORT"
+    bench config set-common-config -c redis_queue "redis://127.0.0.1:$REDIS_QUEUE_PORT"
+    bench config set-common-config -c redis_socketio "redis://127.0.0.1:$REDIS_SOCKETIO_PORT"
+    bench config set-common-config -c web_server_port "$WEB_PORT"
+}
 
-cd "$BENCH_NAME"
+# ==========================================
+# APP INSTALLATION
+# ==========================================
+install_apps() {
+    log "Fetching Apps..."
 
-echo -e "${BLUE}Configuring bench...${NC}"
-bench config set-common-config -c db_host "'127.0.0.1'" || true
-bench config set-common-config -c db_port "${DB_PORT}" || true
-bench config set-common-config -c mariadb_root_password "'${MYSQL_ROOT_PASS}'" || true
-bench config set-common-config -c redis_cache "'redis://127.0.0.1:${REDIS_CACHE_PORT}'" || true
-bench config set-common-config -c redis_queue "'redis://127.0.0.1:${REDIS_QUEUE_PORT}'" || true
-bench config set-common-config -c redis_socketio "'redis://127.0.0.1:${REDIS_SOCKETIO_PORT}'" || true
+    # 1. ERPNext
+    if [ ! -d "apps/erpnext" ]; then
+        bench get-app erpnext --branch "$ERPNEXT_BRANCH" --resolve-deps
+    fi
 
-echo -e "${BLUE}Fetching apps...${NC}"
+    # 2. HRMS
+    if [ ! -d "apps/hrms" ]; then
+        bench get-app hrms --branch "$HRMS_BRANCH" --resolve-deps
+    fi
 
-echo "Fetching ERPNext from branch ${ERPNEXT_BRANCH}..."
-retry_get_app "erpnext" "$ERPNEXT_BRANCH" "https://github.com/frappe/erpnext" || die "Failed to get ERPNext after retries"
-echo -e "${GREEN}✓ ERPNext fetched${NC}"
+    # 3. Custom Apps
+    if [ -z "$GITHUB_TOKEN" ]; then
+        warn "No GitHub Token provided. Skipping private custom apps."
+    else
+        log "Fetching Custom Apps using Token..."
+        
+        # Function to safely get app
+        get_custom_app() {
+            local url=$1
+            local name=$2 # Optional: expected folder name
+            
+            log "Getting $url..."
+            # Note: bench get-app handles auth if url includes token
+            if ! bench get-app "$url" --branch "$CUSTOM_BRANCH" --resolve-deps; then
+                warn "Failed to fetch $url. Check permissions or branch name."
+            else
+                success "Fetched $url"
+            fi
+        }
 
-echo "Fetching HRMS from branch ${HRMS_BRANCH}..."
-retry_get_app "hrms" "$HRMS_BRANCH" "https://github.com/frappe/hrms" || die "Failed to get HRMS after retries"
-echo -e "${GREEN}✓ HRMS fetched${NC}"
+        # MMCY Apps
+        # Note: We construct the URL with the token
+        get_custom_app "https://${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-hrms.git"
+        get_custom_app "https://${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-asset-management.git"
+        get_custom_app "https://${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-it-operations.git"
+    fi
+}
 
+# ==========================================
+# SITE CREATION
+# ==========================================
+create_site() {
+    log "Creating Site: $SITE_NAME"
 
-if [ -z "${GITHUB_TOKEN}" ]; then
-  echo -e "${YELLOW}⚠ No GitHub token provided - custom apps will be skipped${NC}"
-  echo -e "${YELLOW}To include custom apps, run: bash install-frappe-complete.sh -t YOUR_GITHUB_TOKEN${NC}"
-else
-  echo -e "${GREEN}✓ GitHub token received${NC}"
+    # Force re-install if exists
+    rm -rf "sites/$SITE_NAME"
 
-  retry_get_app "custom-hrms" "$CUSTOM_BRANCH" "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-hrms.git" || echo -e "${YELLOW}⚠ custom-hrms not available${NC}"
+    bench new-site "$SITE_NAME" \
+        --db-root-password "$MYSQL_ROOT_PASS" \
+        --admin-password "$ADMIN_PASS" \
+        --db-host "127.0.0.1" \
+        --db-port "$DB_PORT" \
+        --install-app erpnext \
+        --force
 
-  retry_get_app "custom-asset-management" "$CUSTOM_BRANCH" "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-asset-management.git" || echo -e "${YELLOW}⚠ custom-asset-management not available${NC}"
+    log "Installing HRMS..."
+    bench --site "$SITE_NAME" install-app hrms
 
-  retry_get_app "custom-it-operations" "$CUSTOM_BRANCH" "https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/custom-it-operations.git" || echo -e "${YELLOW}⚠ custom-it-operations not available${NC}"
+    # Install Custom Apps if they exist in apps/ folder
+    log "Attempting to install Custom Apps..."
+    
+    # We loop through directory names in apps/ to find matches
+    # This fixes issues where repo name != app name
+    
+    install_if_exists() {
+        local folder_name=$1
+        local app_python_name=$2 # Usually same as folder, but sometimes underscores vs dashes
+        
+        if [ -d "apps/$folder_name" ]; then
+            log "Installing $app_python_name..."
+            bench --site "$SITE_NAME" install-app "$app_python_name" || warn "Failed to install $app_python_name (might require migration)"
+        fi
+    }
 
-fi
+    # Adjust these names based on the actual folder names created inside `frappe-bench/apps/`
+    install_if_exists "custom-hrms" "mmcy_hrms"
+    install_if_exists "custom-asset-management" "mmcy_asset_management"
+    install_if_exists "custom-it-operations" "mmcy_it_operations"
+    
+    # Force Migrate to ensure DB schema is correct
+    log "Running Migrations..."
+    bench --site "$SITE_NAME" migrate
+}
 
-echo -e "${GREEN}✓ All apps fetched${NC}"
+# ==========================================
+# MAIN EXECUTION
+# ==========================================
 
-echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
+# 1. Setup Environment
+install_dependencies
 
-echo "Cleaning up any leftover databases..."
-mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" <<SQL 2>/dev/null || true
-DROP DATABASE IF EXISTS \`$(echo ${SITE_NAME} | sed 's/\./_/g')\`;
-DROP DATABASE IF EXISTS \`_9dd2166bc4fc2357\`;
-DROP DATABASE IF EXISTS \`_afd6259a990fe66d\`;
-FLUSH PRIVILEGES;
-SQL
+# 2. Setup Services
+configure_mariadb
+configure_redis
 
-echo "Removing all orphaned databases (starting with underscore)..."
-TEMP_DROP_FILE=$(mktemp)
-trap "rm -f '$TEMP_DROP_FILE'" EXIT
+# 3. Setup Bench
+setup_bench
 
-mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" 2>/dev/null <<SQL > "$TEMP_DROP_FILE" || true
-SELECT CONCAT('DROP DATABASE IF EXISTS \`', schema_name, '\`;') 
-FROM information_schema.schemata 
-WHERE schema_name LIKE '\_%' 
-AND schema_name NOT IN ('_mysql', '_performance_schema', '_information_schema');
-SQL
+# 4. Get Apps
+install_apps
 
-if [ -s "$TEMP_DROP_FILE" ]; then
-  mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" < "$TEMP_DROP_FILE" 2>/dev/null || true
-fi
+# 5. Create Site & Install Apps
+create_site
 
-rm -rf "sites/${SITE_NAME}" 2>/dev/null || true
-
-sleep 3
-
-bench new-site "$SITE_NAME" \
-  --db-type mariadb \
-  --db-host "127.0.0.1" \
-  --db-port "${DB_PORT}" \
-  --db-root-username root \
-  --db-root-password "${MYSQL_ROOT_PASS}" \
-  --admin-password "${ADMIN_PASS}" || die "Failed to create site '${SITE_NAME}'"
-
-echo -e "${GREEN}✓ Site created${NC}"
-
-echo -e "${BLUE}Verifying Redis instances are accessible...${NC}"
-if ! redis-cli -p ${REDIS_CACHE_PORT} ping >/dev/null 2>&1; then
-  die "Redis cache on port ${REDIS_CACHE_PORT} is not accessible"
-fi
-if ! redis-cli -p ${REDIS_QUEUE_PORT} ping >/dev/null 2>&1; then
-  die "Redis queue on port ${REDIS_QUEUE_PORT} is not accessible"
-fi
-if ! redis-cli -p ${REDIS_SOCKETIO_PORT} ping >/dev/null 2>&1; then
-  die "Redis socketio on port ${REDIS_SOCKETIO_PORT} is not accessible"
-fi
-
-echo -e "${GREEN}✓ All Redis instances verified${NC}"
-
-echo -e "${BLUE}Installing apps on site...${NC}"
-
-echo "Installing ERPNext..."
-bench --site "$SITE_NAME" install-app erpnext || die "Failed to install ERPNext"
-echo -e "${GREEN}✓ ERPNext installed${NC}"
-
-echo "Installing HRMS..."
-bench --site "$SITE_NAME" install-app hrms || die "Failed to install HRMS"
-echo -e "${GREEN}✓ HRMS installed${NC}"
-
-# Install MMCY Apps WITHOUT running migrations
-if [ -d "apps/custom-hrms" ]; then
-  echo "Installing mmcy_hrms..."
-  bench --site "$SITE_NAME" install-app mmcy_hrms || echo -e "${YELLOW}⚠ mmcy_hrms installation had issues (expected - migration pending)${NC}"
-  echo -e "${GREEN}✓ mmcy_hrms linked to site (migration deferred)${NC}"
-fi
-
-if [ -d "apps/custom-asset-management" ]; then
-  echo "Installing mmcy_asset_management..."
-  bench --site "$SITE_NAME" install-app mmcy_asset_management || echo -e "${YELLOW}⚠ mmcy_asset_management installation had issues (expected - migration pending)${NC}"
-  echo -e "${GREEN}✓ mmcy_asset_management linked to site (migration deferred)${NC}"
-fi
-
-if [ -d "apps/custom-it-operations" ]; then
-  echo "Installing mmcy_it_operations..."
-  bench --site "$SITE_NAME" install-app mmcy_it_operations || echo -e "${YELLOW}⚠ mmcy_it_operations installation had issues (expected - migration pending)${NC}"
-  echo -e "${GREEN}✓ mmcy_it_operations linked to site (migration deferred)${NC}"
-fi
-
-# DO NOT RUN MIGRATIONS NOW
-echo -e "${YELLOW}⚠ Skipping migrations intentionally. Apps will load but some pages may break.${NC}"
-
-echo -e "${BLUE}Building assets and clearing cache...${NC}"
-bench build || true
-bench --site "$SITE_NAME" clear-cache || true
-bench --site "$SITE_NAME" clear-website-cache || true
-
-echo -e "${BLUE}Setting up Procfile with correct Redis configuration...${NC}"
+# 6. Generate Procfile for development
+log "Generating Procfile..."
 cat > Procfile <<EOF
-redis_cache: redis-server ${REDIS_CONFIG_DIR}/redis-cache.conf
-redis_queue: redis-server ${REDIS_CONFIG_DIR}/redis-queue.conf
-redis_socketio: redis-server ${REDIS_CONFIG_DIR}/redis-socketio.conf
-web: bench serve --port 8000
+web: bench serve --port $WEB_PORT
 socketio: node apps/frappe/socketio.js
-schedule: bench schedule
-worker: bench worker
 watch: bench watch
+schedule: bench schedule
+worker_short: bench worker --queue short
+worker_long: bench worker --queue long
+worker_default: bench worker --queue default
 EOF
-echo -e "${GREEN}✓ Procfile configured${NC}"
 
-echo -e "${BLUE}Restarting bench services...${NC}"
-bench restart || echo -e "${YELLOW}⚠ Bench will restart on next 'bench start'${NC}"
-
-echo -e "${BLUE}Fixing company abbreviation for MMCYTech...${NC}"
-bench --site "$SITE_NAME" execute "
-import frappe
-frappe.connect()
-try:
-    frappe.db.set_value('Company', 'MMCYTech', 'abbr', 'MT', update_modified=False)
-    frappe.db.commit()
-    print('✓ Company abbreviation set to MT')
-except Exception as e:
-    print(f'Company abbreviation will be set on first login: {str(e)}')
-" || echo -e "${YELLOW}⚠ Company abbreviation will need manual setup${NC}"
-
-echo -e "${BLUE}Verifying installed apps...${NC}"
-bench --site "$SITE_NAME" list-apps
-
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}✓ Installation Complete!${NC}"
-echo -e "${GREEN}========================================${NC}"
+success "=================================================="
+success "INSTALLATION COMPLETE"
+success "=================================================="
+echo "Run the following to start:"
+echo "  cd $INSTALL_DIR/$BENCH_NAME"
+echo "  bench start"
 echo ""
-echo -e "${BLUE}Next steps:${NC}"
-echo "1. Navigate to bench: cd ${INSTALL_DIR}/${BENCH_NAME}"
-echo "2. Start the server: bench start"
-echo "3. Access at: http://localhost:8000"
-echo ""
-echo -e "${BLUE}Login credentials:${NC}"
-echo "Site: ${SITE_NAME}"
-echo "Admin Password: ${ADMIN_PASS}"
-echo ""
-echo -e "${BLUE}Installed apps:${NC}"
-echo "  - frappe (core framework)"
-echo "  - erpnext (ERP system)"
-echo "  - hrms (HR module)"
-echo "  - custom-hrms (your custom HRMS)"
-echo "  - custom-asset-management (your custom asset management)"
-echo "  - custom-it-operations (your custom IT operations)"
-echo ""
-echo -e "${BLUE}Redis configuration:${NC}"
-echo "  - Cache: port ${REDIS_CACHE_PORT}"
-echo "  - Queue: port ${REDIS_QUEUE_PORT}"
-echo "  - SocketIO: port ${REDIS_SOCKETIO_PORT}"
-echo ""
-echo -e "${BLUE}All custom MMCY apps have been installed on site: ${SITE_NAME}${NC}"
-echo ""
+echo "Access your site at: http://localhost:$WEB_PORT"
+echo "Login: Administrator / $ADMIN_PASS"

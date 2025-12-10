@@ -132,14 +132,31 @@ echo -e "${BLUE}Installing Frappe (Fresh Start) on $OS...${NC}"
 echo -e "${BLUE}Installing dependencies...${NC}"
 if [ "$PKG_MANAGER" == "apt" ]; then
   sudo apt update -y
-  # Using python3 instead of python3.12 for wider compatibility
-  sudo apt install -y python3-dev python3-venv python3-pip redis-server mariadb-server mariadb-client curl git build-essential nodejs jq lsof 
   
-  # --- YARN Installation and PATH Fix (Addressing FileNotFoundError) ---
+  # --- Node.js/NPM/Yarn Setup (Fixed for 'npm not found') ---
+  echo -e "${BLUE}Setting up NodeSource repository for Node.js 20...${NC}"
+  # Install prerequisites
+  sudo apt install -y ca-certificates curl gnupg
+  # Add NodeSource GPG key
+  sudo mkdir -p /etc/apt/keyrings
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+  # Create NodeSource repository file for Node 20
+  NODE_MAJOR=20
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" | sudo tee /etc/apt/sources.list.d/nodesource.list
+  
+  # Update and install Node.js (which includes npm)
+  sudo apt update -y
+  sudo apt install -y nodejs
+  
+  echo -e "${BLUE}Installing required system packages...${NC}"
+  # Install all other dependencies
+  sudo apt install -y python3-dev python3-venv python3-pip redis-server mariadb-server mariadb-client curl git build-essential jq lsof 
+  
   echo -e "${BLUE}Installing Yarn globally...${NC}"
+  # Install Yarn globally using the newly installed npm
   sudo npm install -g yarn || true
   
-  # Ensure the global npm directory is in PATH (common fix for 'yarn not found' on Linux/WSL)
+  # Ensure the global npm directory is in PATH (The path fix for Yarn itself)
   NPM_GLOBAL_BIN="$(npm prefix -g)/bin"
   if ! echo "$PATH" | grep -q "$NPM_GLOBAL_BIN"; then
     export PATH="$NPM_GLOBAL_BIN:$PATH"

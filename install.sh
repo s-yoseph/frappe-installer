@@ -64,6 +64,7 @@ NC='\033[0m'
 # --- Utility Functions ---
 die() { echo -e "${RED}ERROR: $*${NC}" >&2; exit 1; }
 
+# MODIFIED: Does not call 'die' for custom apps on failure, allowing the script to continue.
 retry_get_app() {
   # Usage: retry_get_app <app_name> <repo_name> <branch> <url>
   local app_name=$1
@@ -73,21 +74,20 @@ retry_get_app() {
   local max_attempts=3
   local attempt=1
   
-  # Determine if we are installing a custom app to use --resolve-deps
+  # Determine if we are installing a custom app
+  local is_custom_app=0
   local get_app_options="--branch \"$branch\""
   if [[ "$app_name" =~ ^mmcy_ ]]; then
+    is_custom_app=1
     echo -e "${BLUE}*** Custom App Detected: Resolving dependencies... ***${NC}"
     get_app_options="$get_app_options --resolve-deps"
   fi
 
-  # Note: Displaying the intended app name for clarity
   echo -e "${BLUE}Fetching $app_name (from repo $repo_name) from branch $branch...${NC}"
 
   while [ $attempt -le $max_attempts ]; do
     echo -e "${BLUE}[Attempt $attempt/$max_attempts]...${NC}"
 
-    # Using the bench get-app [OPTIONS] APP_NAME GIT_URL
-    # The $get_app_options variable now contains the necessary flags
     if bench get-app $get_app_options "$app_name" "$url" 2>&1; then
       echo -e "${GREEN}✓ $app_name fetched successfully${NC}"
       return 0
@@ -101,13 +101,14 @@ retry_get_app() {
     attempt=$((attempt + 1))
   done
 
-  # Die if the custom app fails to fetch after all retries
-  if [[ "$app_name" =~ ^mmcy_ ]]; then
-    die "Failed to fetch custom app $app_name (from repo $repo_name) after $max_attempts attempts. Check your GITHUB_TOKEN permissions (must have 'repo' scope) and repository access."
+  # If it's a custom app, return 1 (failure) but DO NOT exit the script (new behavior).
+  if [ $is_custom_app -eq 1 ]; then
+    echo -e "${RED}FAILURE: Failed to fetch custom app $app_name (from repo $repo_name) after $max_attempts attempts. Skipping this app.${NC}"
+    return 1
   fi
 
-  echo -e "${YELLOW}⚠ Failed to fetch $app_name after $max_attempts attempts${NC}"
-  return 1
+  # For essential standard apps (frappe/erpnext/hrms), we still exit.
+  die "Critical app fetch failed for $app_name. Check network and repository status."
 }
 
 # --- Platform Detection ---
@@ -391,6 +392,8 @@ retry_get_app "hrms" "hrms" "$HRMS_BRANCH" "https://github.com/frappe/hrms" || d
 
 # Custom Apps
 echo -e "${BLUE}Fetching custom apps...${NC}"
+declare -a INSTALLED_CUSTOM_APPS=() # List to track successfully fetched custom apps
+
 if [ -z "${GITHUB_TOKEN}" ]; then
   echo -e "${YELLOW}⚠ No GitHub token provided - custom apps will be skipped${NC}"
   echo -e "${YELLOW}To include custom apps, run: bash install-frappe-complete.sh -t YOUR_GITHUB_TOKEN${NC}"
@@ -398,15 +401,16 @@ else
   echo -e "${GREEN}✓ GitHub token received${NC}"
   for repo_name in "${!CUSTOM_APPS[@]}"; do
     app_name="${CUSTOM_APPS[$repo_name]}"
-    # Note: The GITHUB_TOKEN is embedded in the URL for authentication
     repo_url="https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/${repo_name}.git"
 
-    # The retry_get_app function now uses --resolve-deps for mmcy_ apps
-    retry_get_app "$app_name" "$repo_name" "$CUSTOM_BRANCH" "$repo_url"
+    # Call retry_get_app and only add to list if successful (return code 0)
+    if retry_get_app "$app_name" "$repo_name" "$CUSTOM_BRANCH" "$repo_url"; then
+        INSTALLED_CUSTOM_APPS+=("$app_name")
+    fi
   done
 fi
 
-echo -e "${GREEN}✓ All apps fetched${NC}"
+echo -e "${GREEN}✓ All app fetching attempts complete${NC}"
 
 ## Create Site
 echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
@@ -434,15 +438,13 @@ bench new-site "$SITE_NAME" \
 
 echo -e "${GREEN}✓ Site created and core apps installed${NC}"
 
-## Install Custom Apps
-echo -e "${BLUE}Installing custom apps on site...${NC}"
-for app_name in "${CUSTOM_APPS[@]}"; do
-  if [ -d "apps/$app_name" ]; then
+## Install Custom Apps (Uses the successful list)
+echo -e "${BLUE}Installing successfully fetched custom apps on site...${NC}"
+for app_name in "${INSTALLED_CUSTOM_APPS[@]}"; do
     echo "Installing $app_name..."
     # Install with --skip-migrations as requested
     bench --site "$SITE_NAME" install-app "$app_name" --skip-migrations || echo -e "${YELLOW}⚠ $app_name installation had issues (expected - migration pending)${NC}"
     echo -e "${GREEN}✓ $app_name linked to site${NC}"
-  fi
 done
 
 echo -e "${YELLOW}⚠ Skipping migrations intentionally. Apps will load but some pages may break.${NC}"

@@ -133,7 +133,7 @@ echo -e "${BLUE}Installing dependencies...${NC}"
 if [ "$PKG_MANAGER" == "apt" ]; then
   sudo apt update -y
   # Using python3 instead of python3.12 for wider compatibility
-  sudo apt install -y python3-dev python3-venv python3-pip redis-server mariadb-server mariadb-client curl git build-essential nodejs jq
+  sudo apt install -y python3-dev python3-venv python3-pip redis-server mariadb-server mariadb-client curl git build-essential nodejs jq lsof # Added lsof
   sudo npm install -g yarn || true
 elif [ "$PKG_MANAGER" == "brew" ]; then
   # Using python@3.12 for specific Frappe version requirements if needed, otherwise python3
@@ -211,11 +211,11 @@ if [ "$PKG_MANAGER" == "apt" ]; then
   done
 fi
 
-## Setup MariaDB (MOST ROBUST FIXED SECTION)
+## Setup MariaDB (ULTRA ROBUST FIXED SECTION)
 echo -e "${BLUE}Setting up MariaDB...${NC}"
 
 if [ "$PKG_MANAGER" == "apt" ]; then
-    # 1. Stop service and check port
+    # 1. Stop service and clean up processes/ports
     echo -e "${BLUE}Attempting to stop all MariaDB/MySQL services...${NC}"
     sudo systemctl stop mariadb || true
     sudo systemctl stop mysql || true 
@@ -226,54 +226,39 @@ if [ "$PKG_MANAGER" == "apt" ]; then
     sudo lsof -i :${DB_PORT} -t 2>/dev/null | xargs -r sudo kill -9 || true
     sleep 2
 
-    # 2. Configure MariaDB on Linux/WSL
-    MARIADB_CONFIG="/etc/mysql/mariadb.conf.d/50-server.cnf"
-    if [ ! -f "$MARIADB_CONFIG" ]; then
-      MARIADB_CONFIG="/etc/mysql/my.cnf"
-    fi
+    # 2. Configure MariaDB using a minimal, custom config file to ensure clean syntax
+    MARIADB_CONFIG_DIR="/etc/mysql/mariadb.conf.d"
+    CUSTOM_CONFIG_FILE="${MARIADB_CONFIG_DIR}/99-frappe.cnf"
     
-    echo -e "${BLUE}Configuring MariaDB file ${MARIADB_CONFIG} to use port ${DB_PORT} and bind to 127.0.0.1...${NC}"
+    echo -e "${BLUE}Creating clean MariaDB configuration in ${CUSTOM_CONFIG_FILE}...${NC}"
 
-    # Use sed to safely replace bind-address and port, or append if not found
-    # Bind-address
-    if grep -q "^bind-address" "$MARIADB_CONFIG"; then
-      sudo sed -i "s/^bind-address\s*=\s*.*$/bind-address = 127.0.0.1/" "$MARIADB_CONFIG"
-    else
-      # Append if not found
-      sudo sed -i "/\[mysqld\]/a bind-address = 127.0.0.1" "$MARIADB_CONFIG"
-    fi
-    # Port
-    if grep -q "^port" "$MARIADB_CONFIG"; then
-      sudo sed -i "s/^port\s*=\s*.*$/port = ${DB_PORT}/" "$MARIADB_CONFIG"
-    else
-      # Append if not found
-      sudo sed -i "/\[mysqld\]/a port = ${DB_PORT}" "$MARIADB_CONFIG"
-    fi
-    # Additional required settings for Frappe
-    if ! grep -q "innodb_buffer_pool_size" "$MARIADB_CONFIG"; then
-        sudo sed -i "/\[mysqld\]/a innodb_buffer_pool_size = 256M" "$MARIADB_CONFIG"
-        sudo sed -i "/\[mysqld\]/a skip-external-locking" "$MARIADB_CONFIG"
-    fi
-
-
+    # Use tee to write the new, minimal configuration
+    sudo tee "$CUSTOM_CONFIG_FILE" > /dev/null <<EOF
+[mysqld]
+port = ${DB_PORT}
+bind-address = 127.0.0.1
+innodb_buffer_pool_size = 256M
+skip-external-locking
+EOF
+    
     # Ensure systemd sees the changes
     sudo systemctl daemon-reload
     sleep 1
 
     # 3. Start MariaDB normally
     echo -e "${BLUE}Starting MariaDB on port ${DB_PORT}...${NC}"
+    # Start the service and wait for it to be active
     sudo systemctl start mariadb 
     
-    # Wait for service to be active
-    for i in {1..10}; do
+    for i in {1..15}; do
         if sudo systemctl is-active mariadb >/dev/null 2>&1; then
             echo -e "${GREEN}✓ MariaDB service is running${NC}"
             break
         fi
-        if [ $i -eq 10 ]; then
-             die "MariaDB service failed to start after configuration. Run 'sudo systemctl status mariadb.service' for the error."
+        if [ $i -eq 15 ]; then
+             die "MariaDB service failed to start after configuration. Run 'sudo systemctl status mariadb.service' for the error. Check for low memory on WSL."
         fi
-        echo "Waiting for MariaDB service... attempt $i/10"
+        echo "Waiting for MariaDB service to become active... attempt $i/15"
         sleep 2
     done
 
@@ -300,195 +285,4 @@ SQL
 elif [ "$PKG_MANAGER" == "brew" ]; then
     # Homebrew MariaDB setup 
     brew services stop mariadb || true
-    echo -e "${YELLOW}⚠ Homebrew MariaDB service will be configured to use port ${DB_PORT}. ${NC}"
-    mysql_config_file="$(brew --prefix)/etc/my.cnf"
-    if [ ! -f "$mysql_config_file" ] || ! grep -q "port = ${DB_PORT}" "$mysql_config_file"; then
-        # Append port configuration to the config file
-        echo -e "[mysqld]\nport = ${DB_PORT}\n" >> "$mysql_config_file"
-    fi
-    brew services start mariadb || die "Failed to start MariaDB Homebrew service"
-    sleep 5
-    
-    # Set password via standard ALTER USER
-    echo -e "${BLUE}Setting MariaDB root password (macOS)...${NC}"
-    mysql -u root <<SQL || die "Failed to set MariaDB root password"
-FLUSH PRIVILEGES;
-ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
-ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
-FLUSH PRIVILEGES;
-SQL
-    echo -e "${GREEN}✓ MariaDB root password set successfully.${NC}"
-fi
-
-# Universal verification check
-if ! mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT 1;" >/dev/null 2>&1; then
-  die "MariaDB connection failed - verify port ${DB_PORT} is accessible and root password is set. Run 'sudo systemctl status mariadb.service' for details."
-fi
-
-echo -e "${GREEN}✓ MariaDB ready on port ${DB_PORT}${NC}"
-
-## Install Bench and Initialize
-
-# Determine the correct Python executable to use
-PYTHON_EXEC="python3"
-if [ "$PKG_MANAGER" == "brew" ]; then
-    # On macOS, check for the specific version required (or default)
-    if command -v python3.12 >/dev/null 2>&1; then
-        PYTHON_EXEC="python3.12"
-    fi
-    echo -e "${BLUE}Using Python executable: ${PYTHON_EXEC}${NC}"
-fi
-
-if ! command -v bench >/dev/null 2>&1; then
-  echo -e "${BLUE}Installing frappe-bench using ${PYTHON_EXEC}...${NC}"
-  "$PYTHON_EXEC" -m pip install --user frappe-bench || die "Failed to install frappe-bench"
-fi
-
-echo -e "${BLUE}Cleaning up old installation...${NC}"
-if [ -d "$INSTALL_DIR/$BENCH_NAME" ]; then
-  echo "Removing old bench directory..."
-  sudo chmod -R u+w "$INSTALL_DIR/$BENCH_NAME" 2>/dev/null || true
-  sudo rm -rf "$INSTALL_DIR/$BENCH_NAME" || die "Failed to remove old bench directory"
-  echo -e "${GREEN}Old bench removed${NC}"
-fi
-
-mkdir -p "$INSTALL_DIR"
-cd "$INSTALL_DIR"
-
-echo -e "${BLUE}Initializing fresh bench...${NC}"
-bench init "$BENCH_NAME" --frappe-branch "$FRAPPE_BRANCH" --python "$PYTHON_EXEC" || die "Failed to initialize bench"
-
-cd "$BENCH_NAME"
-
-echo -e "${BLUE}Configuring bench...${NC}"
-bench config set-common-config -c db_host "127.0.0.1" || true
-bench config set-common-config -c db_port "${DB_PORT}" || true
-bench config set-common-config -c mariadb_root_password "${MYSQL_ROOT_PASS}" || true
-bench config set-common-config -c redis_cache "redis://127.0.0.1:${REDIS_CACHE_PORT}" || true
-bench config set-common-config -c redis_queue "redis://127.0.0.1:${REDIS_QUEUE_PORT}" || true
-bench config set-common-config -c redis_socketio "redis://127.0.0.1:${REDIS_SOCKETIO_PORT}" || true
-
-## Fetch Apps
-echo -e "${BLUE}Fetching standard apps...${NC}"
-
-# Standard Apps
-retry_get_app "erpnext" "erpnext" "$ERPNEXT_BRANCH" "https://github.com/frappe/erpnext" || die "Failed to get ERPNext after retries"
-retry_get_app "hrms" "hrms" "$HRMS_BRANCH" "https://github.com/frappe/hrms" || die "Failed to get HRMS after retries"
-
-# Custom Apps
-echo -e "${BLUE}Fetching custom apps...${NC}"
-if [ -z "${GITHUB_TOKEN}" ]; then
-  echo -e "${YELLOW}⚠ No GitHub token provided - custom apps will be skipped${NC}"
-  echo -e "${YELLOW}To include custom apps, run: bash install-frappe-complete.sh -t YOUR_GITHUB_TOKEN${NC}"
-else
-  echo -e "${GREEN}✓ GitHub token received${NC}"
-  for repo_name in "${!CUSTOM_APPS[@]}"; do
-    app_name="${CUSTOM_APPS[$repo_name]}"
-    # Note: The GITHUB_TOKEN is embedded in the URL for authentication
-    repo_url="https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/${repo_name}.git"
-
-    # The retry_get_app function now uses --resolve-deps for mmcy_ apps
-    retry_get_app "$app_name" "$repo_name" "$CUSTOM_BRANCH" "$repo_url"
-  done
-fi
-
-echo -e "${GREEN}✓ All apps fetched${NC}"
-
-## Create Site
-echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
-
-# Simple cleanup of the specific site's DB and folder
-echo "Cleaning up any leftover database and folder for ${SITE_NAME}..."
-DB_NAME=$(echo ${SITE_NAME} | sed 's/\./_/g')
-# Explicitly use -h 127.0.0.1 for consistent connection
-mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" -e "DROP DATABASE IF EXISTS \`${DB_NAME}\`;" 2>/dev/null || true
-rm -rf "sites/${SITE_NAME}" 2>/dev/null || true
-sleep 2
-
-# Create new site and install core apps simultaneously
-bench new-site "$SITE_NAME" \
-    --db-type mariadb \
-    --db-host "127.0.0.1" \
-    --db-port "${DB_PORT}" \
-    --db-root-username root \
-    --db-root-password "${MYSQL_ROOT_PASS}" \
-    --admin-password "${ADMIN_PASS}" \
-    --force \
-    --install-app frappe \
-    --install-app erpnext \
-    --install-app hrms || die "Failed to create site '${SITE_NAME}'"
-
-echo -e "${GREEN}✓ Site created and core apps installed${NC}"
-
-## Install Custom Apps
-echo -e "${BLUE}Installing custom apps on site...${NC}"
-for app_name in "${CUSTOM_APPS[@]}"; do
-  if [ -d "apps/$app_name" ]; then
-    echo "Installing $app_name..."
-    # Install with --skip-migrations as requested
-    bench --site "$SITE_NAME" install-app "$app_name" --skip-migrations || echo -e "${YELLOW}⚠ $app_name installation had issues (expected - migration pending)${NC}"
-    echo -e "${GREEN}✓ $app_name linked to site${NC}"
-  fi
-done
-
-echo -e "${YELLOW}⚠ Skipping migrations intentionally. Apps will load but some pages may break.${NC}"
-
-## Build Assets and Configure
-echo -e "${BLUE}Building assets and clearing cache...${NC}"
-bench build || true
-bench --site "$SITE_NAME" clear-cache || true
-bench --site "$SITE_NAME" clear-website-cache || true
-
-echo -e "${BLUE}Setting up Procfile with correct Redis configuration...${NC}"
-# Use the REDIS_CONFIG_DIR variable for the full path
-cat > Procfile <<EOF
-redis_cache: redis-server ${REDIS_CONFIG_DIR}/redis-cache.conf
-redis_queue: redis-server ${REDIS_CONFIG_DIR}/redis-queue.conf
-redis_socketio: redis-server ${REDIS_CONFIG_DIR}/redis-socketio.conf
-web: bench serve --port 8000
-socketio: node apps/frappe/socketio.js
-schedule: bench schedule
-worker: bench worker
-watch: bench watch
-EOF
-echo -e "${GREEN}✓ Procfile configured${NC}"
-
-# Optional post-install setup (keep as is)
-echo -e "${BLUE}Fixing company abbreviation for MMCYTech...${NC}"
-bench --site "$SITE_NAME" execute "
-import frappe
-frappe.connect()
-try:
-  frappe.db.set_value('Company', 'MMCYTech', 'abbr', 'MT', update_modified=False)
-  frappe.db.commit()
-  print('✓ Company abbreviation set to MT')
-except Exception as e:
-  print(f'Company abbreviation will be set on first login: {str(e)}')
-" || echo -e "${YELLOW}⚠ Company abbreviation will need manual setup${NC}"
-
-echo -e "${BLUE}Verifying installed apps...${NC}"
-bench --site "$SITE_NAME" list-apps
-
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}✓ Installation Complete!${NC}"
-echo -e "${GREEN}========================================${NC}"
-echo ""
-echo -e "${BLUE}Next steps:${NC}"
-echo "1. Navigate to bench: cd ${INSTALL_DIR}/${BENCH_NAME}"
-
-if [ "$PKG_MANAGER" == "brew" ]; then
-  echo "2. **IMPORTANT for macOS:** Ensure services are running: \`brew services start mariadb\` and \`brew services start redis\`"
-else
-  echo "2. **IMPORTANT for WSL/Linux:** Check that MariaDB and the three custom Redis instances are running."
-fi
-
-echo "3. Start the server: bench start"
-echo "4. Access at: http://localhost:8000"
-echo ""
-echo -e "${BLUE}Login credentials:${NC}"
-echo "Site: ${SITE_NAME}"
-echo "Admin Password: ${ADMIN_PASS}"
-echo ""
-echo -e "${BLUE}Installed apps:${NC}"
-bench --site "$SITE_NAME" list-apps | sed 's/^/  - /'
-echo ""
+    echo

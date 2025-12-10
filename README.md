@@ -18,8 +18,6 @@ The script handles dependencies, MariaDB setup, and fixture workarounds (e.g., `
 
 - **Ubuntu 22.04** or **WSL (Windows Subsystem for Linux)**  
 - **GitHub Personal Access Token (PAT)** with `repo` scope for private repositories:  
-  - [`s-yoseph/frappe-installer`](https://github.com/s-yoseph/frappe-installer)  
-  - `MMCY-Tech/*`  
 
 👉 Generate your PAT here: [github.com/settings/tokens](https://github.com/settings/tokens)  
 

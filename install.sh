@@ -211,52 +211,65 @@ if [ "$PKG_MANAGER" == "apt" ]; then
   done
 fi
 
-## Setup MariaDB
+## Setup MariaDB (FIXED SECTION)
 echo -e "${BLUE}Setting up MariaDB...${NC}"
 
 if [ "$PKG_MANAGER" == "apt" ]; then
     # 1. Stop service and configure port
+    echo -e "${BLUE}Attempting to stop all MariaDB/MySQL services...${NC}"
     sudo systemctl stop mariadb || true
-    sleep 2
+    sudo systemctl stop mysql || true # Check for alternate names
+    sudo pkill -9 -f "mysqld" 2>/dev/null || true # Kill any lingering processes
+    sleep 3
 
     # Configure MariaDB on Linux/WSL
-    echo -e "${BLUE}Configuring MariaDB port ${DB_PORT}...${NC}"
-    sudo tee /etc/mysql/mariadb.conf.d/99-custom.cnf > /dev/null <<EOF
-[mysqld]
-port = ${DB_PORT}
-bind-address = 127.0.0.1
-innodb_buffer_pool_size = 256M
-skip-external-locking
-EOF
+    # We target a common config file and use sed for robust in-place modification
+    MARIADB_CONFIG="/etc/mysql/mariadb.conf.d/50-server.cnf"
+    if [ ! -f "$MARIADB_CONFIG" ]; then
+      MARIADB_CONFIG="/etc/mysql/my.cnf"
+    fi
+    
+    echo -e "${BLUE}Configuring MariaDB file ${MARIADB_CONFIG} to use port ${DB_PORT} and bind to 127.0.0.1...${NC}"
+
+    # Use sed to safely replace bind-address and port, or append if not found
+    sudo sed -i "s/^bind-address\s*=\s*.*$/bind-address = 127.0.0.1/" "$MARIADB_CONFIG" || true
+    if ! grep -q "bind-address = 127.0.0.1" "$MARIADB_CONFIG"; then
+        sudo sed -i "/\[mysqld\]/a bind-address = 127.0.0.1" "$MARIADB_CONFIG"
+    fi
+
+    sudo sed -i "s/^port\s*=\s*.*$/port = ${DB_PORT}/" "$MARIADB_CONFIG" || true
+    if ! grep -q "port = ${DB_PORT}" "$MARIADB_CONFIG"; then
+        sudo sed -i "/\[mysqld\]/a port = ${DB_PORT}" "$MARIADB_CONFIG"
+    fi
+
+    # Ensure systemd sees the changes
     sudo systemctl daemon-reload
     sleep 1
 
-    # 2. Start MariaDB in insecure mode to bypass password requirement
-    echo -e "${BLUE}Starting MariaDB in insecure mode to set root password...${NC}"
-    sudo systemctl set-environment MYSQLD_OPTS="--skip-grant-tables"
-    sudo systemctl start mariadb || die "Failed to start MariaDB in insecure mode"
-    sleep 4
+    # 2. Start MariaDB normally
+    echo -e "${BLUE}Starting MariaDB on port ${DB_PORT}...${NC}"
+    sudo systemctl start mariadb || die "Failed to start MariaDB service. Check 'systemctl status mariadb.service' for exact error."
+    sleep 5
 
-    # 3. Set the root password using the insecure connection
-    echo -e "${BLUE}Setting MariaDB root password...${NC}"
-    # Connect as root without a password because --skip-grant-tables is active
-    sudo mysql -u root <<SQL || die "Failed to set MariaDB root password"
-FLUSH PRIVILEGES;
--- Remove unix_socket plugin for both localhost and 127.0.0.1 connections
+    # 3. Set the root password leveraging the unix_socket plugin for initial authentication
+    echo -e "${BLUE}Setting MariaDB root password and fixing authentication...${NC}"
+    # Connect as root using the OS user (unix_socket)
+    sudo mysql <<SQL || die "Failed to set MariaDB root password"
+-- Remove the unix_socket plugin for root@localhost and set password
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
-ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
--- The 'mysql' command is deprecated, but ALTER USER is standard SQL.
+-- Create or alter user for '127.0.0.1' and grant privileges
+CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;
+-- Create or alter user for '::1' (IPv6) and grant privileges
+CREATE USER IF NOT EXISTS 'root'@'::1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'::1' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 SQL
     echo -e "${GREEN}✓ MariaDB root password set successfully.${NC}"
 
-    # 4. Stop service, remove insecure option, and restart normally
-    echo -e "${BLUE}Restarting MariaDB normally...${NC}"
-    sudo systemctl stop mariadb
-    sleep 2
-    sudo systemctl unset-environment MYSQLD_OPTS
-    sudo systemctl start mariadb || die "Failed to restart MariaDB normally"
-    sleep 4
+    # 4. Restart MariaDB to ensure new credentials are used
+    sudo systemctl restart mariadb
+    sleep 3
 
 elif [ "$PKG_MANAGER" == "brew" ]; then
     # Homebrew MariaDB setup (which usually avoids the unix_socket issue)
@@ -264,12 +277,13 @@ elif [ "$PKG_MANAGER" == "brew" ]; then
     echo -e "${YELLOW}⚠ Homebrew MariaDB service will be configured to use port ${DB_PORT}. ${NC}"
     mysql_config_file="$(brew --prefix)/etc/my.cnf"
     if [ ! -f "$mysql_config_file" ] || ! grep -q "port = ${DB_PORT}" "$mysql_config_file"; then
+        # Append port configuration to the config file
         echo -e "[mysqld]\nport = ${DB_PORT}\n" >> "$mysql_config_file"
     fi
     brew services start mariadb || die "Failed to start MariaDB Homebrew service"
     sleep 5
     
-    # Set password via standard ALTER USER (brew usually doesn't use unix_socket)
+    # Set password via standard ALTER USER
     echo -e "${BLUE}Setting MariaDB root password (macOS)...${NC}"
     mysql -u root <<SQL || die "Failed to set MariaDB root password"
 FLUSH PRIVILEGES;
@@ -282,7 +296,7 @@ fi
 
 # Universal verification check
 if ! mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT 1;" >/dev/null 2>&1; then
-  die "MariaDB connection failed - verify port ${DB_PORT} is accessible and root password is set"
+  die "MariaDB connection failed - verify port ${DB_PORT} is accessible and root password is set. Run 'sudo systemctl status mariadb.service' for details."
 fi
 
 echo -e "${GREEN}✓ MariaDB ready on port ${DB_PORT}${NC}"
@@ -439,7 +453,7 @@ echo "1. Navigate to bench: cd ${INSTALL_DIR}/${BENCH_NAME}"
 if [ "$PKG_MANAGER" == "brew" ]; then
   echo "2. **IMPORTANT for macOS:** Ensure services are running: \`brew services start mariadb\` and \`brew services start redis\`"
 else
-  echo "2. **IMPORTANT for WSL/Linux:** Check that MariaDB and the three custom Redis instances are running (if you hit 'Killed' errors, fix your memory allocation)."
+  echo "2. **IMPORTANT for WSL/Linux:** Check that MariaDB and the three custom Redis instances are running."
 fi
 
 echo "3. Start the server: bench start"
@@ -450,5 +464,5 @@ echo "Site: ${SITE_NAME}"
 echo "Admin Password: ${ADMIN_PASS}"
 echo ""
 echo -e "${BLUE}Installed apps:${NC}"
-bench --site "$SITE_NAME" list-apps | sed 's/^/  - /'
+bench --site "$SITE_NAME" list-apps | sed 's/^/  - /'
 echo ""

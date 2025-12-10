@@ -211,7 +211,7 @@ if [ "$PKG_MANAGER" == "apt" ]; then
   done
 fi
 
-## Setup MariaDB (FIXED SECTION)
+## Setup MariaDB
 echo -e "${BLUE}Setting up MariaDB...${NC}"
 
 if [ "$PKG_MANAGER" == "apt" ]; then
@@ -221,40 +221,42 @@ if [ "$PKG_MANAGER" == "apt" ]; then
 
     # Configure MariaDB on Linux/WSL
     echo -e "${BLUE}Configuring MariaDB port ${DB_PORT}...${NC}"
-    # Use `tee` with `sudo` to safely write to a system file
-    echo "[mysqld]" | sudo tee /etc/mysql/mariadb.conf.d/99-custom.cnf > /dev/null
-    echo "port = ${DB_PORT}" | sudo tee -a /etc/mysql/mariadb.conf.d/99-custom.cnf > /dev/null
-    echo "bind-address = 127.0.0.1" | sudo tee -a /etc/mysql/mariadb.conf.d/99-custom.cnf > /dev/null
-    echo "innodb_buffer_pool_size = 256M" | sudo tee -a /etc/mysql/mariadb.conf.d/99-custom.cnf > /dev/null
-    echo "skip-external-locking" | sudo tee -a /etc/mysql/mariadb.conf.d/99-custom.cnf > /dev/null
-
+    sudo tee /etc/mysql/mariadb.conf.d/99-custom.cnf > /dev/null <<EOF
+[mysqld]
+port = ${DB_PORT}
+bind-address = 127.0.0.1
+innodb_buffer_pool_size = 256M
+skip-external-locking
+EOF
     sudo systemctl daemon-reload
     sleep 1
 
-    # 2. Start MariaDB normally (the default root user can be accessed via `sudo mysql` because of unix_socket)
-    echo -e "${BLUE}Starting MariaDB normally to set root password...${NC}"
-    sudo systemctl start mariadb || die "Failed to start MariaDB"
-    sleep 5
+    # 2. Start MariaDB in insecure mode to bypass password requirement
+    echo -e "${BLUE}Starting MariaDB in insecure mode to set root password...${NC}"
+    sudo systemctl set-environment MYSQLD_OPTS="--skip-grant-tables"
+    sudo systemctl start mariadb || die "Failed to start MariaDB in insecure mode"
+    sleep 4
 
-    # 3. Set the root password leveraging the unix_socket plugin for initial authentication
-    echo -e "${BLUE}Setting MariaDB root password and fixing authentication...${NC}"
-    # Connect as root using the OS user (unix_socket)
-    sudo mysql <<SQL || die "Failed to set MariaDB root password"
--- Remove the unix_socket plugin for root@localhost and set password
+    # 3. Set the root password using the insecure connection
+    echo -e "${BLUE}Setting MariaDB root password...${NC}"
+    # Connect as root without a password because --skip-grant-tables is active
+    sudo mysql -u root <<SQL || die "Failed to set MariaDB root password"
+FLUSH PRIVILEGES;
+-- Remove unix_socket plugin for both localhost and 127.0.0.1 connections
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
--- Create or alter user for '127.0.0.1' and grant privileges
-CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
-GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;
--- Create or alter user for '::1' (IPv6) and grant privileges
-CREATE USER IF NOT EXISTS 'root'@'::1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
-GRANT ALL PRIVILEGES ON *.* TO 'root'@'::1' WITH GRANT OPTION;
+ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
+-- The 'mysql' command is deprecated, but ALTER USER is standard SQL.
 FLUSH PRIVILEGES;
 SQL
     echo -e "${GREEN}✓ MariaDB root password set successfully.${NC}"
 
-    # 4. Optional: Restart MariaDB
-    sudo systemctl restart mariadb
-    sleep 3
+    # 4. Stop service, remove insecure option, and restart normally
+    echo -e "${BLUE}Restarting MariaDB normally...${NC}"
+    sudo systemctl stop mariadb
+    sleep 2
+    sudo systemctl unset-environment MYSQLD_OPTS
+    sudo systemctl start mariadb || die "Failed to restart MariaDB normally"
+    sleep 4
 
 elif [ "$PKG_MANAGER" == "brew" ]; then
     # Homebrew MariaDB setup (which usually avoids the unix_socket issue)
@@ -262,13 +264,12 @@ elif [ "$PKG_MANAGER" == "brew" ]; then
     echo -e "${YELLOW}⚠ Homebrew MariaDB service will be configured to use port ${DB_PORT}. ${NC}"
     mysql_config_file="$(brew --prefix)/etc/my.cnf"
     if [ ! -f "$mysql_config_file" ] || ! grep -q "port = ${DB_PORT}" "$mysql_config_file"; then
-        # Append port configuration to the config file
         echo -e "[mysqld]\nport = ${DB_PORT}\n" >> "$mysql_config_file"
     fi
     brew services start mariadb || die "Failed to start MariaDB Homebrew service"
     sleep 5
     
-    # Set password via standard ALTER USER
+    # Set password via standard ALTER USER (brew usually doesn't use unix_socket)
     echo -e "${BLUE}Setting MariaDB root password (macOS)...${NC}"
     mysql -u root <<SQL || die "Failed to set MariaDB root password"
 FLUSH PRIVILEGES;
@@ -278,7 +279,6 @@ FLUSH PRIVILEGES;
 SQL
     echo -e "${GREEN}✓ MariaDB root password set successfully.${NC}"
 fi
-# END OF FIXED SECTION
 
 # Universal verification check
 if ! mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT 1;" >/dev/null 2>&1; then
@@ -439,7 +439,7 @@ echo "1. Navigate to bench: cd ${INSTALL_DIR}/${BENCH_NAME}"
 if [ "$PKG_MANAGER" == "brew" ]; then
   echo "2. **IMPORTANT for macOS:** Ensure services are running: \`brew services start mariadb\` and \`brew services start redis\`"
 else
-  echo "2. **IMPORTANT for WSL/Linux:** Check that MariaDB and the three custom Redis instances are running."
+  echo "2. **IMPORTANT for WSL/Linux:** Check that MariaDB and the three custom Redis instances are running (if you hit 'Killed' errors, fix your memory allocation)."
 fi
 
 echo "3. Start the server: bench start"
@@ -450,5 +450,5 @@ echo "Site: ${SITE_NAME}"
 echo "Admin Password: ${ADMIN_PASS}"
 echo ""
 echo -e "${BLUE}Installed apps:${NC}"
-bench --site "$SITE_NAME" list-apps | sed 's/^/  - /'
+bench --site "$SITE_NAME" list-apps | sed 's/^/  - /'
 echo ""

@@ -72,6 +72,13 @@ retry_get_app() {
   local url=$4
   local max_attempts=3
   local attempt=1
+  
+  # Determine if we are installing a custom app to use --resolve-deps
+  local get_app_options="--branch \"$branch\""
+  if [[ "$app_name" =~ ^mmcy_ ]]; then
+    echo -e "${BLUE}*** Custom App Detected: Resolving dependencies... ***${NC}"
+    get_app_options="$get_app_options --resolve-deps"
+  fi
 
   # Note: Displaying the intended app name for clarity
   echo -e "${BLUE}Fetching $app_name (from repo $repo_name) from branch $branch...${NC}"
@@ -79,17 +86,11 @@ retry_get_app() {
   while [ $attempt -le $max_attempts ]; do
     echo -e "${BLUE}[Attempt $attempt/$max_attempts]...${NC}"
 
-    # FIX: Using the classic syntax: bench get-app [OPTIONS] APP_NAME GIT_URL
-    # This works reliably across older and newer bench versions.
-    if bench get-app --branch "$branch" "$app_name" "$url" 2>&1; then
+    # Using the bench get-app [OPTIONS] APP_NAME GIT_URL
+    # The $get_app_options variable now contains the necessary flags
+    if bench get-app $get_app_options "$app_name" "$url" 2>&1; then
       echo -e "${GREEN}✓ $app_name fetched successfully${NC}"
       return 0
-    fi
-
-    # Check if the error is due to authentication for custom apps and skip on the last try
-    if [[ "$app_name" =~ mmcy_ ]] && [ $attempt -eq $max_attempts ]; then
-        echo -e "${YELLOW}⚠ Failed to fetch custom app $app_name after $max_attempts attempts. Skipping.${NC}"
-        return 1
     fi
     
     if [ $attempt -lt $max_attempts ]; then
@@ -99,6 +100,11 @@ retry_get_app() {
 
     attempt=$((attempt + 1))
   done
+
+  # Die if the custom app fails to fetch after all retries
+  if [[ "$app_name" =~ ^mmcy_ ]]; then
+    die "Failed to fetch custom app $app_name (from repo $repo_name) after $max_attempts attempts. Check your GITHUB_TOKEN permissions (must have 'repo' scope) and repository access."
+  fi
 
   echo -e "${YELLOW}⚠ Failed to fetch $app_name after $max_attempts attempts${NC}"
   return 1
@@ -186,7 +192,7 @@ fi
 # Verify Redis instances are running (only needed if started separately)
 if [ "$PKG_MANAGER" == "apt" ]; then
   for i in {1..30}; do
-    # FIX: Use the fully qualified variable names to prevent unbound variable errors
+    # Use the fully qualified variable names to prevent unbound variable errors
     CACHE_OK=$(redis-cli -p ${REDIS_CACHE_PORT} ping 2>/dev/null | grep PONG || echo NO)
     QUEUE_OK=$(redis-cli -p ${REDIS_QUEUE_PORT} ping 2>/dev/null | grep PONG || echo NO)
     SOCKETIO_OK=$(redis-cli -p ${REDIS_SOCKETIO_PORT} ping 2>/dev/null | grep PONG || echo NO)
@@ -205,45 +211,6 @@ if [ "$PKG_MANAGER" == "apt" ]; then
   done
 fi
 
-## Setup MariaDB
-echo -e "${BLUE}Setting up MariaDB...${NC}"
-if [ "$PKG_MANAGER" == "apt" ]; then
-  # Stop system MariaDB
-  sudo systemctl stop mariadb || true
-  sleep 2
-  # Configure MariaDB on Linux/WSL
-  sudo tee /etc/mysql/mariadb.conf.d/99-custom.cnf > /dev/null <<EOF
-[mysqld]
-port = ${DB_PORT}
-bind-address = 127.0.0.1
-innodb_buffer_pool_size = 256M
-skip-external-locking
-EOF
-  sudo systemctl daemon-reload
-  sudo systemctl start mariadb || die "Failed to start MariaDB service"
-  sleep 4
-elif [ "$PKG_MANAGER" == "brew" ]; then
-  # MariaDB on macOS/Homebrew uses a different port config/startup
-  brew services stop mariadb || true
-  echo -e "${YELLOW}⚠ Homebrew MariaDB service will be configured to use port ${DB_PORT}. ${NC}"
-  mysql_config_file="/usr/local/etc/my.cnf" # Common location for Homebrew config
-  # Add port to MariaDB config (if file exists)
-  if [ -f "$mysql_config_file" ]; then
-      if ! grep -q "port = ${DB_PORT}" "$mysql_config_file"; then
-          echo -e "\n[mysqld]\nport = ${DB_PORT}\n" >> "$mysql_config_file"
-      fi
-  else
-      echo -e "[mysqld]\nport = ${DB_PORT}\n" > "$mysql_config_file"
-  fi
-  # Start MariaDB via Homebrew services
-  brew services start mariadb || die "Failed to start MariaDB Homebrew service"
-  sleep 5
-fi
-
-# Set MariaDB root password (universal)
-# Set MariaDB root password (universal)
-echo -e "${BLUE}Attempting to set MariaDB root password using sudo...${NC}"
-# Use sudo to run the mysql command as the OS root user, bypassing unix_socket authentication
 ## Setup MariaDB
 echo -e "${BLUE}Setting up MariaDB...${NC}"
 
@@ -349,7 +316,6 @@ mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
 echo -e "${BLUE}Initializing fresh bench...${NC}"
-# Line 291 now uses a variable that is guaranteed to be set
 bench init "$BENCH_NAME" --frappe-branch "$FRAPPE_BRANCH" --python "$PYTHON_EXEC" || die "Failed to initialize bench"
 
 cd "$BENCH_NAME"
@@ -378,10 +344,11 @@ else
   echo -e "${GREEN}✓ GitHub token received${NC}"
   for repo_name in "${!CUSTOM_APPS[@]}"; do
     app_name="${CUSTOM_APPS[$repo_name]}"
+    # Note: The GITHUB_TOKEN is embedded in the URL for authentication
     repo_url="https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/${repo_name}.git"
 
-    # Crucial: Use --name flag to ensure the app folder matches the desired app name (e.g., mmcy_hrms)
-    retry_get_app "$app_name" "$repo_name" "$CUSTOM_BRANCH" "$repo_url" || echo -e "${YELLOW}⚠ $app_name (from repo $repo_name) not available or failed to fetch${NC}"
+    # The retry_get_app function now uses --resolve-deps for mmcy_ apps
+    retry_get_app "$app_name" "$repo_name" "$CUSTOM_BRANCH" "$repo_url"
   done
 fi
 
@@ -393,13 +360,12 @@ echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
 # Simple cleanup of the specific site's DB and folder
 echo "Cleaning up any leftover database and folder for ${SITE_NAME}..."
 DB_NAME=$(echo ${SITE_NAME} | sed 's/\./_/g')
+# Explicitly use -h 127.0.0.1 for consistent connection
 mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" -e "DROP DATABASE IF EXISTS \`${DB_NAME}\`;" 2>/dev/null || true
 rm -rf "sites/${SITE_NAME}" 2>/dev/null || true
 sleep 2
 
 # Create new site and install core apps simultaneously
-bench new-site "$SITE_NAME" \
-  # NEW (Add frappe and capture detailed output):
 bench new-site "$SITE_NAME" \
     --db-type mariadb \
     --db-host "127.0.0.1" \
@@ -407,7 +373,10 @@ bench new-site "$SITE_NAME" \
     --db-root-username root \
     --db-root-password "${MYSQL_ROOT_PASS}" \
     --admin-password "${ADMIN_PASS}" \
-    --install-app frappe,erpnext,hrms 2>&1 | tee bench_new_site_error.log || die "Failed to create site '${SITE_NAME}'"
+    --force \
+    --install-app frappe \
+    --install-app erpnext \
+    --install-app hrms || die "Failed to create site '${SITE_NAME}'"
 
 echo -e "${GREEN}✓ Site created and core apps installed${NC}"
 
@@ -431,6 +400,7 @@ bench --site "$SITE_NAME" clear-cache || true
 bench --site "$SITE_NAME" clear-website-cache || true
 
 echo -e "${BLUE}Setting up Procfile with correct Redis configuration...${NC}"
+# Use the REDIS_CONFIG_DIR variable for the full path
 cat > Procfile <<EOF
 redis_cache: redis-server ${REDIS_CONFIG_DIR}/redis-cache.conf
 redis_queue: redis-server ${REDIS_CONFIG_DIR}/redis-queue.conf

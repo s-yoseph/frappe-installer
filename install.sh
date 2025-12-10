@@ -211,19 +211,22 @@ if [ "$PKG_MANAGER" == "apt" ]; then
   done
 fi
 
-## Setup MariaDB (FIXED SECTION)
+## Setup MariaDB (MOST ROBUST FIXED SECTION)
 echo -e "${BLUE}Setting up MariaDB...${NC}"
 
 if [ "$PKG_MANAGER" == "apt" ]; then
-    # 1. Stop service and configure port
+    # 1. Stop service and check port
     echo -e "${BLUE}Attempting to stop all MariaDB/MySQL services...${NC}"
     sudo systemctl stop mariadb || true
-    sudo systemctl stop mysql || true # Check for alternate names
-    sudo pkill -9 -f "mysqld" 2>/dev/null || true # Kill any lingering processes
+    sudo systemctl stop mysql || true 
+    sudo pkill -9 -f "mysqld" 2>/dev/null || true 
     sleep 3
 
-    # Configure MariaDB on Linux/WSL
-    # We target a common config file and use sed for robust in-place modification
+    echo -e "${BLUE}Verifying port ${DB_PORT} is free...${NC}"
+    sudo lsof -i :${DB_PORT} -t 2>/dev/null | xargs -r sudo kill -9 || true
+    sleep 2
+
+    # 2. Configure MariaDB on Linux/WSL
     MARIADB_CONFIG="/etc/mysql/mariadb.conf.d/50-server.cnf"
     if [ ! -f "$MARIADB_CONFIG" ]; then
       MARIADB_CONFIG="/etc/mysql/my.cnf"
@@ -232,26 +235,49 @@ if [ "$PKG_MANAGER" == "apt" ]; then
     echo -e "${BLUE}Configuring MariaDB file ${MARIADB_CONFIG} to use port ${DB_PORT} and bind to 127.0.0.1...${NC}"
 
     # Use sed to safely replace bind-address and port, or append if not found
-    sudo sed -i "s/^bind-address\s*=\s*.*$/bind-address = 127.0.0.1/" "$MARIADB_CONFIG" || true
-    if ! grep -q "bind-address = 127.0.0.1" "$MARIADB_CONFIG"; then
-        sudo sed -i "/\[mysqld\]/a bind-address = 127.0.0.1" "$MARIADB_CONFIG"
+    # Bind-address
+    if grep -q "^bind-address" "$MARIADB_CONFIG"; then
+      sudo sed -i "s/^bind-address\s*=\s*.*$/bind-address = 127.0.0.1/" "$MARIADB_CONFIG"
+    else
+      # Append if not found
+      sudo sed -i "/\[mysqld\]/a bind-address = 127.0.0.1" "$MARIADB_CONFIG"
+    fi
+    # Port
+    if grep -q "^port" "$MARIADB_CONFIG"; then
+      sudo sed -i "s/^port\s*=\s*.*$/port = ${DB_PORT}/" "$MARIADB_CONFIG"
+    else
+      # Append if not found
+      sudo sed -i "/\[mysqld\]/a port = ${DB_PORT}" "$MARIADB_CONFIG"
+    fi
+    # Additional required settings for Frappe
+    if ! grep -q "innodb_buffer_pool_size" "$MARIADB_CONFIG"; then
+        sudo sed -i "/\[mysqld\]/a innodb_buffer_pool_size = 256M" "$MARIADB_CONFIG"
+        sudo sed -i "/\[mysqld\]/a skip-external-locking" "$MARIADB_CONFIG"
     fi
 
-    sudo sed -i "s/^port\s*=\s*.*$/port = ${DB_PORT}/" "$MARIADB_CONFIG" || true
-    if ! grep -q "port = ${DB_PORT}" "$MARIADB_CONFIG"; then
-        sudo sed -i "/\[mysqld\]/a port = ${DB_PORT}" "$MARIADB_CONFIG"
-    fi
 
     # Ensure systemd sees the changes
     sudo systemctl daemon-reload
     sleep 1
 
-    # 2. Start MariaDB normally
+    # 3. Start MariaDB normally
     echo -e "${BLUE}Starting MariaDB on port ${DB_PORT}...${NC}"
-    sudo systemctl start mariadb || die "Failed to start MariaDB service. Check 'systemctl status mariadb.service' for exact error."
-    sleep 5
+    sudo systemctl start mariadb 
+    
+    # Wait for service to be active
+    for i in {1..10}; do
+        if sudo systemctl is-active mariadb >/dev/null 2>&1; then
+            echo -e "${GREEN}✓ MariaDB service is running${NC}"
+            break
+        fi
+        if [ $i -eq 10 ]; then
+             die "MariaDB service failed to start after configuration. Run 'sudo systemctl status mariadb.service' for the error."
+        fi
+        echo "Waiting for MariaDB service... attempt $i/10"
+        sleep 2
+    done
 
-    # 3. Set the root password leveraging the unix_socket plugin for initial authentication
+    # 4. Set the root password leveraging the unix_socket plugin for initial authentication
     echo -e "${BLUE}Setting MariaDB root password and fixing authentication...${NC}"
     # Connect as root using the OS user (unix_socket)
     sudo mysql <<SQL || die "Failed to set MariaDB root password"
@@ -267,12 +293,12 @@ FLUSH PRIVILEGES;
 SQL
     echo -e "${GREEN}✓ MariaDB root password set successfully.${NC}"
 
-    # 4. Restart MariaDB to ensure new credentials are used
+    # 5. Restart MariaDB to ensure new credentials are used
     sudo systemctl restart mariadb
     sleep 3
 
 elif [ "$PKG_MANAGER" == "brew" ]; then
-    # Homebrew MariaDB setup (which usually avoids the unix_socket issue)
+    # Homebrew MariaDB setup 
     brew services stop mariadb || true
     echo -e "${YELLOW}⚠ Homebrew MariaDB service will be configured to use port ${DB_PORT}. ${NC}"
     mysql_config_file="$(brew --prefix)/etc/my.cnf"

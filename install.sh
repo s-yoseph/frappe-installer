@@ -134,7 +134,19 @@ if [ "$PKG_MANAGER" == "apt" ]; then
   sudo apt update -y
   # Using python3 instead of python3.12 for wider compatibility
   sudo apt install -y python3-dev python3-venv python3-pip redis-server mariadb-server mariadb-client curl git build-essential nodejs jq lsof 
+  
+  # --- YARN Installation and PATH Fix (Addressing FileNotFoundError) ---
+  echo -e "${BLUE}Installing Yarn globally...${NC}"
   sudo npm install -g yarn || true
+  
+  # Ensure the global npm directory is in PATH (common fix for 'yarn not found' on Linux/WSL)
+  NPM_GLOBAL_BIN="$(npm prefix -g)/bin"
+  if ! echo "$PATH" | grep -q "$NPM_GLOBAL_BIN"; then
+    export PATH="$NPM_GLOBAL_BIN:$PATH"
+    echo -e "${GREEN}✓ Added $NPM_GLOBAL_BIN to PATH for Yarn access.${NC}"
+  fi
+  # -------------------------------------
+
 elif [ "$PKG_MANAGER" == "brew" ]; then
   # Using python@3.12 for specific Frappe version requirements if needed, otherwise python3
   brew install python@3.12 mariadb redis node yarn

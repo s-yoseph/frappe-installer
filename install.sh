@@ -133,7 +133,7 @@ echo -e "${BLUE}Installing dependencies...${NC}"
 if [ "$PKG_MANAGER" == "apt" ]; then
   sudo apt update -y
   # Using python3 instead of python3.12 for wider compatibility
-  sudo apt install -y python3-dev python3-venv python3-pip redis-server mariadb-server mariadb-client curl git build-essential nodejs jq
+  sudo apt install -y python3-dev python3-venv python3-pip redis-server mariadb-server mariadb-client curl git build-essential nodejs jq lsof 
   sudo npm install -g yarn || true
 elif [ "$PKG_MANAGER" == "brew" ]; then
   # Using python@3.12 for specific Frappe version requirements if needed, otherwise python3
@@ -211,51 +211,67 @@ if [ "$PKG_MANAGER" == "apt" ]; then
   done
 fi
 
-## Setup MariaDB
+## Setup MariaDB (Final Fixed Logic)
 echo -e "${BLUE}Setting up MariaDB...${NC}"
 
 if [ "$PKG_MANAGER" == "apt" ]; then
-    # 1. Stop service and configure port
+    # 1. Stop service and clean up processes/ports
+    echo -e "${BLUE}Attempting to stop all MariaDB/MySQL services...${NC}"
     sudo systemctl stop mariadb || true
+    sudo systemctl stop mysql || true 
+    sudo pkill -9 -f "mysqld" 2>/dev/null || true 
+    sleep 3
+
+    echo -e "${BLUE}Verifying port ${DB_PORT} is free...${NC}"
+    sudo lsof -i :${DB_PORT} -t 2>/dev/null | xargs -r sudo kill -9 || true
     sleep 2
 
-    # Configure MariaDB on Linux/WSL
-    echo -e "${BLUE}Configuring MariaDB port ${DB_PORT}...${NC}"
-    sudo tee /etc/mysql/mariadb.conf.d/99-custom.cnf > /dev/null <<EOF
+    # 2. Configure MariaDB using a minimal, custom config file to ensure clean syntax
+    MARIADB_CONFIG_DIR="/etc/mysql/mariadb.conf.d"
+    CUSTOM_CONFIG_FILE="${MARIADB_CONFIG_DIR}/99-frappe.cnf"
+    
+    echo -e "${BLUE}Creating clean MariaDB configuration in ${CUSTOM_CONFIG_FILE}...${NC}"
+
+    # Use tee to write the new, minimal configuration
+    sudo tee "$CUSTOM_CONFIG_FILE" > /dev/null <<EOF
 [mysqld]
 port = ${DB_PORT}
 bind-address = 127.0.0.1
 innodb_buffer_pool_size = 256M
 skip-external-locking
 EOF
+    
+    # Ensure systemd sees the changes
     sudo systemctl daemon-reload
     sleep 1
 
-    # 2. Start MariaDB in insecure mode to bypass password requirement
+    # 3. Start MariaDB in insecure mode
     echo -e "${BLUE}Starting MariaDB in insecure mode to set root password...${NC}"
+    # Setting an environment variable for mariadb.service to skip grant tables
     sudo systemctl set-environment MYSQLD_OPTS="--skip-grant-tables"
-    sudo systemctl start mariadb || die "Failed to start MariaDB in insecure mode"
+    sudo systemctl start mariadb || die "Failed to start MariaDB in insecure mode. Check 'sudo systemctl status mariadb.service'."
     sleep 4
 
-    # 3. Set the root password using the insecure connection
+    # 4. Set the root password using the insecure connection
     echo -e "${BLUE}Setting MariaDB root password...${NC}"
-    # Connect as root without a password because --skip-grant-tables is active
+    # The --skip-grant-tables option allows root access without a password
     sudo mysql -u root <<SQL || die "Failed to set MariaDB root password"
 FLUSH PRIVILEGES;
--- Remove unix_socket plugin for both localhost and 127.0.0.1 connections
+-- Remove unix_socket plugin authentication for localhost and 127.0.0.1
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
-ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
--- The 'mysql' command is deprecated, but ALTER USER is standard SQL.
+-- Ensure a network accessible root user exists
+CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 SQL
     echo -e "${GREEN}✓ MariaDB root password set successfully.${NC}"
 
-    # 4. Stop service, remove insecure option, and restart normally
+    # 5. Stop service, remove insecure option, and restart normally
     echo -e "${BLUE}Restarting MariaDB normally...${NC}"
     sudo systemctl stop mariadb
     sleep 2
     sudo systemctl unset-environment MYSQLD_OPTS
-    sudo systemctl start mariadb || die "Failed to restart MariaDB normally"
+    sudo systemctl start mariadb || die "Failed to restart MariaDB normally. Check 'sudo systemctl status mariadb.service'."
     sleep 4
 
 elif [ "$PKG_MANAGER" == "brew" ]; then
@@ -264,6 +280,7 @@ elif [ "$PKG_MANAGER" == "brew" ]; then
     echo -e "${YELLOW}⚠ Homebrew MariaDB service will be configured to use port ${DB_PORT}. ${NC}"
     mysql_config_file="$(brew --prefix)/etc/my.cnf"
     if [ ! -f "$mysql_config_file" ] || ! grep -q "port = ${DB_PORT}" "$mysql_config_file"; then
+        # Append port configuration to the config file
         echo -e "[mysqld]\nport = ${DB_PORT}\n" >> "$mysql_config_file"
     fi
     brew services start mariadb || die "Failed to start MariaDB Homebrew service"
@@ -450,5 +467,5 @@ echo "Site: ${SITE_NAME}"
 echo "Admin Password: ${ADMIN_PASS}"
 echo ""
 echo -e "${BLUE}Installed apps:${NC}"
-bench --site "$SITE_NAME" list-apps | sed 's/^/  - /'
+bench --site "$SITE_NAME" list-apps | sed 's/^/  - /'
 echo ""

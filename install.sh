@@ -148,6 +148,14 @@ if [ "$PKG_MANAGER" == "apt" ]; then
   sudo apt update -y
   sudo apt install -y nodejs
   
+  # *** PATH FIX: Ensure the Node.js binaries directory is in PATH immediately ***
+  NODE_BIN_DIR="/usr/bin"
+  if ! echo "$PATH" | grep -q "$NODE_BIN_DIR"; then
+    export PATH="$PATH:$NODE_BIN_DIR"
+    echo -e "${GREEN}✓ Added $NODE_BIN_DIR to PATH to ensure 'npm' is found.${NC}"
+  fi
+  # **************************************************************************
+
   echo -e "${BLUE}Installing required system packages...${NC}"
   # Install all other dependencies
   sudo apt install -y python3-dev python3-venv python3-pip redis-server mariadb-server mariadb-client curl git build-essential jq lsof 

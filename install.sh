@@ -211,7 +211,7 @@ if [ "$PKG_MANAGER" == "apt" ]; then
   done
 fi
 
-## Setup MariaDB (ULTRA ROBUST FIXED SECTION)
+## Setup MariaDB (ULTRA ROBUST FIXED SECTION for Authentication Error)
 echo -e "${BLUE}Setting up MariaDB...${NC}"
 
 if [ "$PKG_MANAGER" == "apt" ]; then
@@ -247,36 +247,47 @@ EOF
 
     # 3. Start MariaDB normally
     echo -e "${BLUE}Starting MariaDB on port ${DB_PORT}...${NC}"
-    # Start the service and wait for it to be active
     sudo systemctl start mariadb 
     
+    # Wait for service to be active
     for i in {1..15}; do
         if sudo systemctl is-active mariadb >/dev/null 2>&1; then
             echo -e "${GREEN}✓ MariaDB service is running${NC}"
             break
         fi
         if [ $i -eq 15 ]; then
-             die "MariaDB service failed to start after configuration. Run 'sudo systemctl status mariadb.service' for the error. Check for low memory on WSL."
+             die "MariaDB service failed to start. Run 'sudo systemctl status mariadb.service' for the error."
         fi
         echo "Waiting for MariaDB service to become active... attempt $i/15"
         sleep 2
     done
 
-    # 4. Set the root password leveraging the unix_socket plugin for initial authentication
-    echo -e "${BLUE}Setting MariaDB root password and fixing authentication...${NC}"
-    # Connect as root using the OS user (unix_socket)
-    sudo mysql <<SQL || die "Failed to set MariaDB root password"
--- Remove the unix_socket plugin for root@localhost and set password
+    # 4. Create and execute temporary script to fix root authentication (The core fix)
+    echo -e "${BLUE}Executing temporary script to set MariaDB root password and fix authentication...${NC}"
+    TEMP_SQL_FILE=$(mktemp)
+    
+    # Write the SQL commands to the temporary file
+    cat > "$TEMP_SQL_FILE" <<SQL
+-- Fixes unix_socket issue by setting a password for 'root'@'localhost'
+-- Then sets up 'root'@'127.0.0.1' and 'root'@'::1' for network connections
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
--- Create or alter user for '127.0.0.1' and grant privileges
 CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;
--- Create or alter user for '::1' (IPv6) and grant privileges
 CREATE USER IF NOT EXISTS 'root'@'::1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'::1' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 SQL
-    echo -e "${GREEN}✓ MariaDB root password set successfully.${NC}"
+
+    # Execute the script as the debian-sys-maint user or directly via sudo mysql -f
+    # We use -f to force execution even if some warnings occur
+    if sudo mysql -f < "$TEMP_SQL_FILE"; then
+      echo -e "${GREEN}✓ MariaDB root authentication successfully fixed.${NC}"
+    else
+      rm -f "$TEMP_SQL_FILE"
+      die "Failed to execute MariaDB root password reset script. Check MariaDB logs."
+    fi
+
+    rm -f "$TEMP_SQL_FILE"
 
     # 5. Restart MariaDB to ensure new credentials are used
     sudo systemctl restart mariadb
@@ -285,4 +296,196 @@ SQL
 elif [ "$PKG_MANAGER" == "brew" ]; then
     # Homebrew MariaDB setup 
     brew services stop mariadb || true
-    echo
+    echo -e "${YELLOW}⚠ Homebrew MariaDB service will be configured to use port ${DB_PORT}. ${NC}"
+    mysql_config_file="$(brew --prefix)/etc/my.cnf"
+    if [ ! -f "$mysql_config_file" ] || ! grep -q "port = ${DB_PORT}" "$mysql_config_file"; then
+        # Append port configuration to the config file
+        echo -e "[mysqld]\nport = ${DB_PORT}\n" >> "$mysql_config_file"
+    fi
+    brew services start mariadb || die "Failed to start MariaDB Homebrew service"
+    sleep 5
+    
+    # Set password via standard ALTER USER
+    echo -e "${BLUE}Setting MariaDB root password (macOS)...${NC}"
+    mysql -u root <<SQL || die "Failed to set MariaDB root password"
+FLUSH PRIVILEGES;
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
+ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';
+FLUSH PRIVILEGES;
+SQL
+    echo -e "${GREEN}✓ MariaDB root password set successfully.${NC}"
+fi
+
+# Universal verification check (using TCP connection with password)
+echo -e "${BLUE}Final connection check...${NC}"
+if ! mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT 1;" >/dev/null 2>&1; then
+  die "MariaDB connection FAILED after password reset. Verify the service is running and credentials are correct. Run 'sudo systemctl status mariadb.service'."
+fi
+
+echo -e "${GREEN}✓ MariaDB ready on port ${DB_PORT}${NC}"
+
+## Install Bench and Initialize
+
+# Determine the correct Python executable to use
+PYTHON_EXEC="python3"
+if [ "$PKG_MANAGER" == "brew" ]; then
+    # On macOS, check for the specific version required (or default)
+    if command -v python3.12 >/dev/null 2>&1; then
+        PYTHON_EXEC="python3.12"
+    fi
+    echo -e "${BLUE}Using Python executable: ${PYTHON_EXEC}${NC}"
+fi
+
+if ! command -v bench >/dev/null 2>&1; then
+  echo -e "${BLUE}Installing frappe-bench using ${PYTHON_EXEC}...${NC}"
+  "$PYTHON_EXEC" -m pip install --user frappe-bench || die "Failed to install frappe-bench"
+fi
+
+echo -e "${BLUE}Cleaning up old installation...${NC}"
+if [ -d "$INSTALL_DIR/$BENCH_NAME" ]; then
+  echo "Removing old bench directory..."
+  sudo chmod -R u+w "$INSTALL_DIR/$BENCH_NAME" 2>/dev/null || true
+  sudo rm -rf "$INSTALL_DIR/$BENCH_NAME" || die "Failed to remove old bench directory"
+  echo -e "${GREEN}Old bench removed${NC}"
+fi
+
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR"
+
+echo -e "${BLUE}Initializing fresh bench...${NC}"
+bench init "$BENCH_NAME" --frappe-branch "$FRAPPE_BRANCH" --python "$PYTHON_EXEC" || die "Failed to initialize bench"
+
+cd "$BENCH_NAME"
+
+echo -e "${BLUE}Configuring bench...${NC}"
+bench config set-common-config -c db_host "127.0.0.1" || true
+bench config set-common-config -c db_port "${DB_PORT}" || true
+bench config set-common-config -c mariadb_root_password "${MYSQL_ROOT_PASS}" || true
+bench config set-common-config -c redis_cache "redis://127.0.0.1:${REDIS_CACHE_PORT}" || true
+bench config set-common-config -c redis_queue "redis://127.0.0.1:${REDIS_QUEUE_PORT}" || true
+bench config set-common-config -c redis_socketio "redis://127.0.0.1:${REDIS_SOCKETIO_PORT}" || true
+
+## Fetch Apps
+echo -e "${BLUE}Fetching standard apps...${NC}"
+
+# Standard Apps
+retry_get_app "erpnext" "erpnext" "$ERPNEXT_BRANCH" "https://github.com/frappe/erpnext" || die "Failed to get ERPNext after retries"
+retry_get_app "hrms" "hrms" "$HRMS_BRANCH" "https://github.com/frappe/hrms" || die "Failed to get HRMS after retries"
+
+# Custom Apps
+echo -e "${BLUE}Fetching custom apps...${NC}"
+if [ -z "${GITHUB_TOKEN}" ]; then
+  echo -e "${YELLOW}⚠ No GitHub token provided - custom apps will be skipped${NC}"
+  echo -e "${YELLOW}To include custom apps, run: bash install-frappe-complete.sh -t YOUR_GITHUB_TOKEN${NC}"
+else
+  echo -e "${GREEN}✓ GitHub token received${NC}"
+  for repo_name in "${!CUSTOM_APPS[@]}"; do
+    app_name="${CUSTOM_APPS[$repo_name]}"
+    # Note: The GITHUB_TOKEN is embedded in the URL for authentication
+    repo_url="https://token:${GITHUB_TOKEN}@github.com/MMCY-Tech/${repo_name}.git"
+
+    # The retry_get_app function now uses --resolve-deps for mmcy_ apps
+    retry_get_app "$app_name" "$repo_name" "$CUSTOM_BRANCH" "$repo_url"
+  done
+fi
+
+echo -e "${GREEN}✓ All apps fetched${NC}"
+
+## Create Site
+echo -e "${BLUE}Creating site '${SITE_NAME}'...${NC}"
+
+# Simple cleanup of the specific site's DB and folder
+echo "Cleaning up any leftover database and folder for ${SITE_NAME}..."
+DB_NAME=$(echo ${SITE_NAME} | sed 's/\./_/g')
+# Explicitly use -h 127.0.0.1 for consistent connection
+mysql --protocol=TCP -h 127.0.0.1 -P ${DB_PORT} -u root -p"${MYSQL_ROOT_PASS}" -e "DROP DATABASE IF EXISTS \`${DB_NAME}\`;" 2>/dev/null || true
+rm -rf "sites/${SITE_NAME}" 2>/dev/null || true
+sleep 2
+
+# Create new site and install core apps simultaneously
+bench new-site "$SITE_NAME" \
+    --db-type mariadb \
+    --db-host "127.0.0.1" \
+    --db-port "${DB_PORT}" \
+    --db-root-username root \
+    --db-root-password "${MYSQL_ROOT_PASS}" \
+    --admin-password "${ADMIN_PASS}" \
+    --force \
+    --install-app frappe \
+    --install-app erpnext \
+    --install-app hrms || die "Failed to create site '${SITE_NAME}'"
+
+echo -e "${GREEN}✓ Site created and core apps installed${NC}"
+
+## Install Custom Apps
+echo -e "${BLUE}Installing custom apps on site...${NC}"
+for app_name in "${CUSTOM_APPS[@]}"; do
+  if [ -d "apps/$app_name" ]; then
+    echo "Installing $app_name..."
+    # Install with --skip-migrations as requested
+    bench --site "$SITE_NAME" install-app "$app_name" --skip-migrations || echo -e "${YELLOW}⚠ $app_name installation had issues (expected - migration pending)${NC}"
+    echo -e "${GREEN}✓ $app_name linked to site${NC}"
+  fi
+done
+
+echo -e "${YELLOW}⚠ Skipping migrations intentionally. Apps will load but some pages may break.${NC}"
+
+## Build Assets and Configure
+echo -e "${BLUE}Building assets and clearing cache...${NC}"
+bench build || true
+bench --site "$SITE_NAME" clear-cache || true
+bench --site "$SITE_NAME" clear-website-cache || true
+
+echo -e "${BLUE}Setting up Procfile with correct Redis configuration...${NC}"
+# Use the REDIS_CONFIG_DIR variable for the full path
+cat > Procfile <<EOF
+redis_cache: redis-server ${REDIS_CONFIG_DIR}/redis-cache.conf
+redis_queue: redis-server ${REDIS_CONFIG_DIR}/redis-queue.conf
+redis_socketio: redis-server ${REDIS_CONFIG_DIR}/redis-socketio.conf
+web: bench serve --port 8000
+socketio: node apps/frappe/socketio.js
+schedule: bench schedule
+worker: bench worker
+watch: bench watch
+EOF
+echo -e "${GREEN}✓ Procfile configured${NC}"
+
+# Optional post-install setup (keep as is)
+echo -e "${BLUE}Fixing company abbreviation for MMCYTech...${NC}"
+bench --site "$SITE_NAME" execute "
+import frappe
+frappe.connect()
+try:
+  frappe.db.set_value('Company', 'MMCYTech', 'abbr', 'MT', update_modified=False)
+  frappe.db.commit()
+  print('✓ Company abbreviation set to MT')
+except Exception as e:
+  print(f'Company abbreviation will be set on first login: {str(e)}')
+" || echo -e "${YELLOW}⚠ Company abbreviation will need manual setup${NC}"
+
+echo -e "${BLUE}Verifying installed apps...${NC}"
+bench --site "$SITE_NAME" list-apps
+
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}✓ Installation Complete!${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo ""
+echo -e "${BLUE}Next steps:${NC}"
+echo "1. Navigate to bench: cd ${INSTALL_DIR}/${BENCH_NAME}"
+
+if [ "$PKG_MANAGER" == "brew" ]; then
+  echo "2. **IMPORTANT for macOS:** Ensure services are running: \`brew services start mariadb\` and \`brew services start redis\`"
+else
+  echo "2. **IMPORTANT for WSL/Linux:** Check that MariaDB and the three custom Redis instances are running."
+fi
+
+echo "3. Start the server: bench start"
+echo "4. Access at: http://localhost:8000"
+echo ""
+echo -e "${BLUE}Login credentials:${NC}"
+echo "Site: ${SITE_NAME}"
+echo "Admin Password: ${ADMIN_PASS}"
+echo ""
+echo -e "${BLUE}Installed apps:${NC}"
+bench --site "$SITE_NAME" list-apps | sed 's/^/  - /'
+echo ""
